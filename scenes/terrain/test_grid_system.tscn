@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://c3eedrbmjcsdg"]
+
+[ext_resource type="Script" uid="uid://dc0dcmhb6knif" path="res://scripts/terrain/test_grid_system.gd" id="1_dkptx"]
+
+[node name="Node3D" type="Node3D"]
+script = ExtResource("1_dkptx")

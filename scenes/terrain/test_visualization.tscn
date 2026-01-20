@@ -1,0 +1,22 @@
+[gd_scene load_steps=4 format=3 uid="uid://co0vpix6rmuf1"]
+
+[ext_resource type="Script" uid="uid://bmmo2l8eaqdf5" path="res://scripts/terrain/test_visualization.gd" id="1_pjpgu"]
+[ext_resource type="PackedScene" uid="uid://bkhroqwwaw1fa" path="res://scenes/terrain/grid_visualizer.tscn" id="2_0cfl8"]
+[ext_resource type="PackedScene" uid="uid://prn8jwpwqfgo" path="res://scenes/main/vr_user.tscn" id="3_h7q1y"]
+
+[node name="TestVisualization" type="Node3D"]
+script = ExtResource("1_pjpgu")
+
+[node name="GridVisualizer" parent="." instance=ExtResource("2_0cfl8")]
+
+[node name="VR_User" parent="." instance=ExtResource("3_h7q1y")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 15.353966, 0)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.6393585, 0.7689088, 0, -0.7689088, 0.6393585, 0, 0, 0)
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="DebugLabel" type="Label" parent="UI"]
+offset_right = 40.0
+offset_bottom = 23.0

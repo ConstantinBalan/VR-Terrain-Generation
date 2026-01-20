@@ -1,0 +1,10 @@
+[gd_scene load_steps=4 format=3 uid="uid://bkhroqwwaw1fa"]
+
+[ext_resource type="Script" uid="uid://c8wgnb6nsh0jc" path="res://scripts/terrain/grid_visualizer.gd" id="1_bcoh3"]
+[ext_resource type="Material" uid="uid://dbbq1g01svu56" path="res://Materials/line_material.tres" id="2_lx5nn"]
+[ext_resource type="Material" uid="uid://dbf385ug7lcg2" path="res://Materials/occupied_material.tres" id="3_ayhuv"]
+
+[node name="Node3D" type="Node3D"]
+script = ExtResource("1_bcoh3")
+line_material = ExtResource("2_lx5nn")
+occupied_material = ExtResource("3_ayhuv")

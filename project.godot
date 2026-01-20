@@ -11,5 +11,19 @@ config_version=5
 [application]
 
 config/name="MastersProject"
+run/main_scene="uid://co0vpix6rmuf1"
 config/features=PackedStringArray("4.5", "Forward Plus")
 config/icon="res://icon.svg"
+
+[autoload]
+
+GridManager="*res://scripts/managers/grid_manager.gd"
+
+[rendering]
+
+renderer/rendering_method="mobile"
+
+[xr]
+
+openxr/enabled=true
+shaders/enabled=true
