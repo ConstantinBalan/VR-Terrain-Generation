@@ -1,6 +1,12 @@
 extends Node
 
-@export var grid_size: float = 4.0
+enum ChunkSize {
+	SMALL_8x8,
+	MEDIUM_16x16,
+	LARGE_32x32
+}
+
+@export var grid_size: float = 4.0  # Size of each grid cell in meters
 @export var grid_offset: Vector3 = Vector3.ZERO
 @export var max_grid_extent: int = 50
 @export var debug_mode: bool = true
@@ -23,7 +29,7 @@ func world_to_grid(world_pos: Vector3) -> Vector2i:
 	var grid_x = int(floor(adjusted_position.x / grid_size))
 	var grid_z = int(floor(adjusted_position.z / grid_size))
 	
-	return Vector2i(clamp(grid_x, -grid_size, grid_size), clamp(grid_z, -grid_size, grid_size))	
+	return Vector2i(clamp(grid_x, -max_grid_extent, max_grid_extent), clamp(grid_z, -max_grid_extent, max_grid_extent))	
 	
 func grid_to_world(grid_coordinates: Vector2i) -> Vector3:
 	var world_x = float(grid_coordinates.x) * grid_size + (grid_size * 0.5)
@@ -38,9 +44,7 @@ func is_within_bounds(grid_coordinates: Vector2i) -> bool:
 	var distance_from_origin = grid_coordinates.length()
 	return distance_from_origin <= max_grid_extent
 	
-func get_chunk_at(grid_coordinates: Vector2i, chunk: TerrainChunk) -> bool:
-	if grid_data.get(grid_coordinates) == null:
-		push_warning("Chunk could not be found at: " + str(grid_coordinates))
+func get_chunk_at(grid_coordinates: Vector2i) -> TerrainChunk:
 	return grid_data.get(grid_coordinates, null)
 	
 func occupy_cell(grid_coordinates: Vector2i, chunk: TerrainChunk) -> bool:
@@ -127,6 +131,27 @@ func save_grid_state() -> Dictionary:
 	}
 
 func load_grid_state(state: Dictionary):
-	grid_size = state.get("grid_size", 8.0)
+	grid_size = state.get("grid_size", 4.0)
 	grid_offset = state.get("grid_offset", Vector3.ZERO)
 	# Regenerate actual terrain chunks
+
+## Chunk size utility functions
+func get_chunk_size_meters(chunk_size: ChunkSize) -> float:
+	match chunk_size:
+		ChunkSize.SMALL_8x8:
+			return grid_size * 2  # 8 meters
+		ChunkSize.MEDIUM_16x16:
+			return grid_size * 4  # 16 meters 
+		ChunkSize.LARGE_32x32:
+			return grid_size * 8  # 32 meters
+	return grid_size * 2
+
+func get_chunk_size_cells(chunk_size: ChunkSize) -> int:
+	match chunk_size:
+		ChunkSize.SMALL_8x8:
+			return 2
+		ChunkSize.MEDIUM_16x16:
+			return 4
+		ChunkSize.LARGE_32x32:
+			return 8
+	return 2

@@ -18,6 +18,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 GridManager="*res://scripts/managers/grid_manager.gd"
+InteractionManager="*res://scripts/managers/interaction_manager.gd"
 
 [rendering]
 

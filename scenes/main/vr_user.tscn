@@ -1,8 +1,19 @@
-[gd_scene load_steps=3 format=3 uid="uid://prn8jwpwqfgo"]
+[gd_scene load_steps=6 format=3 uid="uid://prn8jwpwqfgo"]
 
 [ext_resource type="Script" uid="uid://dotdjsxd0w2dl" path="res://scripts/vr/vr_user.gd" id="1_mmsqc"]
+[ext_resource type="Script" uid="uid://dy6ujbyc3dl4v" path="res://scripts/vr/vr_controller.gd" id="2_ejrx4"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_ejrx4"]
+radius = 0.075
+height = 0.15
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_48cpe"]
+radius = 0.075
+height = 0.15
 
 [sub_resource type="SphereMesh" id="SphereMesh_mmsqc"]
+radius = 0.1
+height = 0.1
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_mmsqc")
@@ -15,16 +26,23 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.7, 0)
 [node name="LeftHand" type="XRController3D" parent="XROrigin3D"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.5, 1, -0.5)
 tracker = &"left_hand"
+script = ExtResource("2_ejrx4")
+is_right_hand = false
 
 [node name="LeftHandModel" type="MeshInstance3D" parent="XROrigin3D/LeftHand"]
+mesh = SubResource("CapsuleMesh_ejrx4")
 
 [node name="LeftRaycast" type="RayCast3D" parent="XROrigin3D/LeftHand"]
+debug_shape_custom_color = Color(0, 0, 1, 1)
+debug_shape_thickness = 1
 
 [node name="RightHand" type="XRController3D" parent="XROrigin3D"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 1, -0.5)
 tracker = &"right_hand"
+script = ExtResource("2_ejrx4")
 
 [node name="RightHandModel" type="MeshInstance3D" parent="XROrigin3D/RightHand"]
+mesh = SubResource("CapsuleMesh_48cpe")
 
 [node name="RightRaycast" type="RayCast3D" parent="XROrigin3D/RightHand"]
 

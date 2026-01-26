@@ -1,38 +1,67 @@
 extends Node3D
+class_name VRUser
 
 @export var maximum_refresh_rate : int = 90
+@export var enable_vr: bool = true
+@export var fallback_to_desktop: bool = true
 
 var xr_interface: OpenXRInterface
 var xr_is_focused = false
+var vr_active = false
 
+# VR session signals
 signal focus_lost
-signal focus_gained
+signal focus_gained  
 signal pose_recentered
 
+# Initialization signals for main scene
+signal vr_initialized
+signal vr_fallback_activated
+
 func _ready():
-	xr_interface = XRServer.find_interface("OpenXR")
-	if xr_interface and xr_interface.is_initialized():
-		print("OpenXR initialized successfully")
-		var vp: Viewport = get_viewport()
-		
-		vp.use_xr = true
-		
-		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	setup_xr_interface()
 
-		if RenderingServer.get_rendering_device():
-			vp.vrs_mode = Viewport.VRS_XR
-		elif int(ProjectSettings.get_setting("xr/openxr/foveation_level")) == 0:
-			push_warning("OpenXR: Recommend setting Foveation level to High in Project Settings")
+func setup_xr_interface():
+	if enable_vr:
+		xr_interface = XRServer.find_interface("OpenXR")
+		if xr_interface and xr_interface.is_initialized():
+			print("OpenXR initialized successfully")
+			var vp: Viewport = get_viewport()
+			
+			vp.use_xr = true
+			
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 
-		xr_interface.session_begun.connect(_on_openxr_session_begun)
-		xr_interface.session_visible.connect(_on_openxr_visible_state)
-		xr_interface.session_focused.connect(_on_openxr_focused_state)
-		xr_interface.session_stopping.connect(_on_openxr_stopping)
-		xr_interface.pose_recentered.connect(_on_openxr_pose_recentered)
-		
+			if RenderingServer.get_rendering_device():
+				vp.vrs_mode = Viewport.VRS_XR
+			elif int(ProjectSettings.get_setting("xr/openxr/foveation_level")) == 0:
+				push_warning("OpenXR: Recommend setting Foveation level to High in Project Settings")
+
+			xr_interface.session_begun.connect(_on_openxr_session_begun)
+			xr_interface.session_visible.connect(_on_openxr_visible_state)
+			xr_interface.session_focussed.connect(_on_openxr_focused_state)
+			xr_interface.session_stopping.connect(_on_openxr_stopping)
+			xr_interface.pose_recentered.connect(_on_openxr_pose_recentered)
+			
+			vr_active = true
+			vr_initialized.emit()
+			
+		else:
+			print("OpenXR not initialized, please check if your headset is connected")
+			if fallback_to_desktop:
+				handle_vr_fallback()
+			else:
+				get_tree().quit()
 	else:
-		print("OpenXR not initialized, please check if your headset is connected")
-		get_tree().quit()
+		handle_vr_fallback()
+
+func handle_vr_fallback():
+	print("VR not available - signaling fallback mode")
+	vr_active = false
+	vr_fallback_activated.emit()
+
+func is_vr_active() -> bool:
+	return vr_active and xr_interface != null and xr_interface.is_initialized()
 
 func _on_openxr_session_begun() -> void:
 	# Get the reported refresh rate

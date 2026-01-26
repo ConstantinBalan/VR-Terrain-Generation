@@ -1,19 +1,36 @@
-[gd_scene load_steps=4 format=3 uid="uid://co0vpix6rmuf1"]
+[gd_scene load_steps=6 format=3 uid="uid://co0vpix6rmuf1"]
 
 [ext_resource type="Script" uid="uid://bmmo2l8eaqdf5" path="res://scripts/terrain/test_visualization.gd" id="1_pjpgu"]
 [ext_resource type="PackedScene" uid="uid://bkhroqwwaw1fa" path="res://scenes/terrain/grid_visualizer.tscn" id="2_0cfl8"]
 [ext_resource type="PackedScene" uid="uid://prn8jwpwqfgo" path="res://scenes/main/vr_user.tscn" id="3_h7q1y"]
 
-[node name="TestVisualization" type="Node3D"]
+[sub_resource type="PlaneMesh" id="PlaneMesh_h7q1y"]
+size = Vector2(200, 200)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_brqqr"]
+size = Vector3(200, 0.1, 200)
+
+[node name="Main2" type="Node3D"]
 script = ExtResource("1_pjpgu")
 
-[node name="GridVisualizer" parent="." instance=ExtResource("2_0cfl8")]
-
 [node name="VR_User" parent="." instance=ExtResource("3_h7q1y")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 15.353966, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 10, 0)
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.6393585, 0.7689088, 0, -0.7689088, 0.6393585, 0, 0, 0)
+[node name="Environment" type="Node" parent="."]
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="Environment"]
+transform = Transform3D(0.9832962, -0.18201242, 0, 0.18201242, 0.9832962, 0, 0, 0, 1, 0, 44.54637, 0)
+
+[node name="Ground" type="StaticBody3D" parent="Environment"]
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Environment/Ground"]
+mesh = SubResource("PlaneMesh_h7q1y")
+skeleton = NodePath("../..")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Environment/Ground"]
+shape = SubResource("BoxShape3D_brqqr")
+
+[node name="GridVisualizer" parent="." instance=ExtResource("2_0cfl8")]
 
 [node name="UI" type="CanvasLayer" parent="."]
 
