@@ -156,23 +156,21 @@ func attempt_placement(grid_pos: Vector2i):
 
 func create_terrain_at_position(grid_pos: Vector2i, chunk_size: GridManager.ChunkSize):
 	# Create basic terrain chunk for MVP (will be enhanced in Phase 2)
-	var terrain_chunk = TerrainChunk.new()
-	terrain_chunk.grid_position = grid_pos
+	var terrain_chunk = preload("res://scenes/terrain/terrain_chunk.tscn").instantiate()
 	
-	# Add basic visual representation
-	var mesh_instance = MeshInstance3D.new()
-	var box_mesh = BoxMesh.new()
-	var size_meters = GridManager.get_chunk_size_meters(chunk_size)
-	box_mesh.size = Vector3(size_meters * 0.8, 0.5, size_meters * 0.8)
-	mesh_instance.mesh = box_mesh
-	terrain_chunk.add_child(mesh_instance)
-	
+	var params = TerrainParameters.new()
+	params.chunk_size_meters = GridManager.get_chunk_size_meters(chunk_size)
+	params.resolution = 64
+	params.seed_value = randi() * 10000
+	params.frequency = randf_range(0.05, 0.15)
+	params.amplitude = randf_range(3.0, 8.0)
 	# Position chunk in world
 	var world_position = GridManager.grid_to_world(grid_pos)
 	terrain_chunk.global_position = world_position
 	
 	# Add to scene
 	get_tree().current_scene.add_child(terrain_chunk)
+	terrain_chunk.generate_terrain(params, grid_pos)
 	
 	# Register with grid manager
 	GridManager.occupy_cell(grid_pos, terrain_chunk)
