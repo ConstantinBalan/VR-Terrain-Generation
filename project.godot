@@ -23,6 +23,7 @@ config/icon="res://icon.svg"
 
 GridManager="*res://scripts/managers/grid_manager.gd"
 InteractionManager="*res://scripts/managers/interaction_manager.gd"
+TerrainStitcher="*uid://mhmqbdbhuyut"
 
 [rendering]
 

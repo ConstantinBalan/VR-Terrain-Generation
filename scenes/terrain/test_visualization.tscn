@@ -24,6 +24,7 @@ transform = Transform3D(0.9832962, -0.18201242, 0, 0.18201242, 0.9832962, 0, 0, 
 [node name="Ground" type="StaticBody3D" parent="Environment" unique_id=1052098963]
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Environment/Ground" unique_id=1386726471]
+visible = false
 mesh = SubResource("PlaneMesh_h7q1y")
 skeleton = NodePath("../..")
 

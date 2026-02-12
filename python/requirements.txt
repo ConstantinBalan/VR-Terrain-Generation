@@ -1,0 +1,19 @@
+# Voice-to-Terrain Generation Dependencies
+# Install with: pip install -r requirements.txt
+
+# OpenAI for GPT API and Whisper models
+openai>=1.3.0
+
+# Audio processing
+openai-whisper>=20231117
+
+# Core dependencies (usually included with Python)
+requests>=2.31.0
+numpy>=1.24.0
+
+# Optional: For faster audio processing
+torch>=2.0.0  # For GPU acceleration (if available)
+torchaudio>=2.0.0  # Audio processing optimizations
+
+# Development and debugging
+python-dotenv>=1.0.0  # For loading .env files with API keys

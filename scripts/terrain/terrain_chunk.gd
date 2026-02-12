@@ -43,21 +43,30 @@ func generate_terrain(params: TerrainParameters, grid_pos: Vector2i) -> bool:
 	parameters = params.duplicate()
 	grid_position = grid_pos
 	
+	print("TerrainChunk: Starting generation for chunk at ", grid_position)
 	var start_time = Time.get_time_dict_from_system()
 	
+	print("TerrainChunk: Setting up noise generator...")
 	if not setup_noise_generator():
+		print("TerrainChunk: Failed to setup noise generator")
 		generation_failed.emit(self, "Failed to setup noise generator")
 		return false
 	
+	print("TerrainChunk: Generating height data...")
 	if not generate_height_data():
+		print("TerrainChunk: Failed to generate height data")
 		generation_failed.emit(self, "Failed to generate height data")
 		return false
-		
+	
+	print("TerrainChunk: Creating mesh from heights...")	
 	if not create_mesh_from_heights():
+		print("TerrainChunk: Failed to create mesh")
 		generation_failed.emit(self, "Failed to create mesh from height")
 		return false
-		
+	
+	print("TerrainChunk: Setting up collisions...")	
 	if not setup_collisions():
+		print("TerrainChunk: Failed to setup collisions")
 		generation_failed.emit(self, "Failed to set up collisions")
 		return false
 	
@@ -65,6 +74,7 @@ func generate_terrain(params: TerrainParameters, grid_pos: Vector2i) -> bool:
 	generation_time = calculate_time_difference(start_time, end_time)
 	
 	print("Generated terrain chunk at ", grid_position, " in ", generation_time, "ms")
+	print("TerrainChunk: Emitting generation_complete signal for chunk at ", grid_position)
 	generation_complete.emit(self)
 	return true
 	
@@ -148,7 +158,7 @@ func apply_erosion_effect(world_x: float, world_z: float, base_height: float) ->
 	return base_height * (1.0 - erosion_amount)
 
 func calculate_time_difference(start_time: Dictionary, end_time: Dictionary):
-	var start_ms = start_time.hour * 360000 + start_time.minute * 60000 + start_time.second * 1000
+	var start_ms = start_time.hour * 3600000 + start_time.minute * 60000 + start_time.second * 1000
 	var end_ms = end_time.hour * 3600000 + end_time.minute * 60000 + end_time.second * 1000
 	return end_ms - start_ms
 
@@ -193,7 +203,7 @@ func get_edge_heights(edge_direction: Vector2i) -> PackedFloat32Array:
 	var resolution = parameters.resolution
 	var edge_heights = PackedFloat32Array()
 	
-	if edge_direction.x == -1: #right edge
+	if edge_direction.x == 1: #right edge
 		for z in range(resolution):
 			edge_heights.append(height_data[z * resolution + (resolution - 1)])
 	elif edge_direction.x == -1: #left edge
@@ -222,7 +232,7 @@ func create_mesh_from_heights():
 	if not generate_triangles(surface_tool):
 		return false
 	
-	surface_tool.generate_normals()
+	surface_tool.generate_normals(false)
 	surface_tool.generate_tangents()
 	
 	mesh_cache = surface_tool.commit()
@@ -243,9 +253,6 @@ func generate_vertices(surface_tool: SurfaceTool):
 			var local_z = -chunk_size * 0.5 + z * cell_size
 			var height = height_data[z * resolution + x]
 			
-			var vertex = Vector3(local_x, height, local_z)
-			surface_tool.add_vertex(vertex)
-			
 			var u = float(x) / float(resolution - 1)
 			var v = float(z) / float(resolution - 1)
 			surface_tool.set_uv(Vector2(u, v))
@@ -253,6 +260,9 @@ func generate_vertices(surface_tool: SurfaceTool):
 			var height_ratio = (height + parameters.amplitude) / (2.0 * parameters.amplitude)
 			height_ratio = clamp(height_ratio, 0.0, 1.0)
 			surface_tool.set_color(Color(height_ratio, 1.0 - height_ratio, 0.5))
+			
+			var vertex = Vector3(local_x, height, local_z)
+			surface_tool.add_vertex(vertex)
 	return true
 	
 func generate_triangles(surface_tool: SurfaceTool) -> bool:
@@ -266,12 +276,12 @@ func generate_triangles(surface_tool: SurfaceTool) -> bool:
 			var bottom_right = (z + 1) * resolution + (x + 1)
 				
 			surface_tool.add_index(top_left)
-			surface_tool.add_index(bottom_left)
 			surface_tool.add_index(top_right)
+			surface_tool.add_index(bottom_left)
 				
 			surface_tool.add_index(top_right)
-			surface_tool.add_index(bottom_left)
 			surface_tool.add_index(bottom_right)
+			surface_tool.add_index(bottom_left)
 				
 	return true
 	
@@ -306,6 +316,9 @@ func setup_collisions() -> bool:
 	heightmap_shape.map_data = collision_heights
 	heightmap_shape.map_width = resolution
 	heightmap_shape.map_depth = resolution
+	
+	collision_shape.shape = heightmap_shape
+	collision_cache = heightmap_shape
 	
 	return true
 

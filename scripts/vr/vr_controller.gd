@@ -3,20 +3,28 @@ extends XRController3D
 
 @export var is_right_hand: bool = true
 @export var interaction_range: float = 300.0
+@export var movement_speed: float = 5.0
 
 @onready var raycast: RayCast3D = get_node_or_null("LeftRaycast") if not is_right_hand else get_node_or_null("RightRaycast")
 @onready var hand_model = get_node_or_null("LeftHandModel") if not is_right_hand else get_node_or_null("RightHandModel")
 @onready var interaction_sphere = get_node_or_null("InteractionSphere") if is_right_hand else null
+@onready var xr_camera: XRCamera3D = get_node("../XRCamera")
+@onready var xr_origin: XROrigin3D = get_node("../")
 
 var trigger_pressed: bool = false
 var primary_button_pressed: bool = false
 var secondary_button_pressed: bool = false
 var thumbstick_click_pressed: bool = false
+var grip_pressed: bool = false
+
+var last_thumbstick_input: Vector2 = Vector2.ZERO
+var thumbstick_deadzone: float = 0.3
 
 var current_target_position: Vector3
 var current_grid_position: Vector2i
 var is_hovering_valid_cell: bool = false
 var grid_cell_preview: MeshInstance3D
+var grid_cell_previews: Array[MeshInstance3D] = []  # For multi-cell preview
 
 signal trigger_activated(world_pos: Vector3, grid_pos: Vector2i)
 signal primary_button_activated()
@@ -132,11 +140,13 @@ func update_input_state():
 	var old_primary = primary_button_pressed
 	var old_secondary = secondary_button_pressed
 	var old_thumbstick_click = thumbstick_click_pressed
+	var old_grip = grip_pressed
 	
 	trigger_pressed = get_float("terrain_trigger") > 0.5
 	primary_button_pressed = is_button_pressed("terrain_primary")
 	secondary_button_pressed = is_button_pressed("terrain_secondary")  
 	thumbstick_click_pressed = is_button_pressed("terrain_thumbstick_click")
+	grip_pressed = get_float("terrain_grip") > 0.5
 	
 	if trigger_pressed and not old_trigger:
 		handle_trigger_press()
@@ -159,19 +169,23 @@ func update_raycast_target():
 			current_target_position = raycast.get_collision_point()
 			current_grid_position = GridManager.world_to_grid(current_target_position)
 			
-			# Validate grid position
-			is_hovering_valid_cell = GridManager.is_within_bounds(current_grid_position) and \
-								   not GridManager.is_cell_occupied(current_grid_position)
+			# Validate grid position using area availability
+			var selected_size = InteractionManager.selected_chunk_size if InteractionManager else GridManager.ChunkSize.SMALL_8x8
+			is_hovering_valid_cell = GridManager.is_area_available(current_grid_position, selected_size)
 			
 			# Show grid cell preview at the grid-aligned position
 			if grid_cell_preview and is_right_hand:
-				var grid_world_pos = GridManager.grid_to_world(current_grid_position)
+				selected_size = InteractionManager.selected_chunk_size if InteractionManager else GridManager.ChunkSize.SMALL_8x8
+				var grid_world_pos = GridManager.grid_to_world_chunk(current_grid_position, selected_size)
 				grid_cell_preview.global_position = grid_world_pos + Vector3(0, 0.08, 0)  # Slightly above ground
 				grid_cell_preview.global_rotation = Vector3.ZERO  # Keep oriented to world, not controller
 				grid_cell_preview.visible = true
 				
 				# Update preview size in case selection changed
 				update_preview_size()
+				
+				# Show individual cell previews
+				show_preview_cells(true)
 				
 				# Update preview color based on validity
 				update_preview_material()
@@ -184,6 +198,7 @@ func update_raycast_target():
 			is_hovering_valid_cell = false
 			if grid_cell_preview:
 				grid_cell_preview.visible = false
+			show_preview_cells(false)
 			if interaction_sphere:
 				interaction_sphere.visible = false
 	else:
@@ -200,44 +215,84 @@ func update_visual_feedback():
 		# Color coding: Green = valid, Red = invalid, Yellow = occupied
 		if is_hovering_valid_cell:
 			material.albedo_color = Color.GREEN
-		elif GridManager.is_cell_occupied(current_grid_position):
+		elif not GridManager.is_within_bounds(current_grid_position):
 			material.albedo_color = Color.YELLOW
 		else:
 			material.albedo_color = Color.RED
 
 func update_preview_material():
-	if not grid_cell_preview or not grid_cell_preview.material_override:
-		return
-		
-	var material = grid_cell_preview.material_override as StandardMaterial3D
-	if not material:
-		return
+	# Update main preview material
+	if grid_cell_preview and grid_cell_preview.material_override:
+		var material = grid_cell_preview.material_override as StandardMaterial3D
+		if material:
+			if is_hovering_valid_cell:
+				material.albedo_color = Color.GREEN
+				material.albedo_color.a = 0.6
+			else:
+				material.albedo_color = Color.RED
+				material.albedo_color.a = 0.4
 	
-	# Color coding for grid cell preview
-	if is_hovering_valid_cell:
-		material.albedo_color = Color.GREEN
-		material.albedo_color.a = 0.6  # More opaque for valid placement
-	elif GridManager.is_cell_occupied(current_grid_position):
-		material.albedo_color = Color.YELLOW
-		material.albedo_color.a = 0.4  # Less opaque for occupied
-	else:
-		material.albedo_color = Color.RED
-		material.albedo_color.a = 0.4  # Less opaque for invalid
+	# Update individual cell preview materials
+	if InteractionManager:
+		var selected_size = InteractionManager.selected_chunk_size
+		var required_cells = GridManager.get_cells_for_chunk(current_grid_position, selected_size)
+		
+		for i in range(grid_cell_previews.size()):
+			if i < required_cells.size():
+				var cell_pos = required_cells[i]
+				var preview = grid_cell_previews[i]
+				var material = preview.material_override as StandardMaterial3D
+				
+				if material:
+					# Color based on individual cell availability
+					if GridManager.is_within_bounds(cell_pos) and not GridManager.is_cell_occupied(cell_pos):
+						material.albedo_color = Color.GREEN if is_hovering_valid_cell else Color.YELLOW
+					else:
+						material.albedo_color = Color.RED
 
 func update_preview_size():
-	if not grid_cell_preview or not InteractionManager:
+	if not InteractionManager:
 		return
-		
-	# Get the current selected chunk size from InteractionManager
+	
+	# Clear existing preview cells
+	clear_preview_cells()
+	
+	# Get the current selected chunk size
 	var selected_size = InteractionManager.selected_chunk_size
-	var chunk_size_meters = GridManager.get_chunk_size_meters(selected_size)
+	var required_cells = GridManager.get_cells_for_chunk(current_grid_position, selected_size)
 	
-	# Create/update the box mesh to match the terrain chunk size
-	var box = BoxMesh.new()
-	box.size = Vector3(chunk_size_meters * 0.95, 0.15, chunk_size_meters * 0.95)  # Slightly smaller for visual clarity
-	grid_cell_preview.mesh = box
+	# Create preview for each cell
+	for cell_pos in required_cells:
+		var preview_cell = MeshInstance3D.new()
+		var box = BoxMesh.new()
+		box.size = Vector3(GridManager.grid_size * 0.9, 0.1, GridManager.grid_size * 0.9)
+		preview_cell.mesh = box
+		
+		# Apply material
+		var material = StandardMaterial3D.new()
+		material.flags_transparent = true
+		material.flags_unshaded = true
+		material.albedo_color.a = 0.3
+		preview_cell.material_override = material
+		
+		# Add to scene tree first
+		add_child(preview_cell)
+		
+		# Then position it (now it's in the tree) and keep world orientation
+		var cell_world_pos = GridManager.grid_to_world(cell_pos)
+		preview_cell.global_position = cell_world_pos + Vector3(0, 0.05, 0)
+		preview_cell.global_rotation = Vector3.ZERO  # Keep oriented to world, not controller
+		
+		grid_cell_previews.append(preview_cell)
 	
-	print("Preview size updated to: ", chunk_size_meters, "m (", selected_size, ")")
+	# Keep the main preview for compatibility
+	if grid_cell_preview:
+		var chunk_size_meters = GridManager.get_chunk_size_meters(selected_size)
+		var box = BoxMesh.new()
+		box.size = Vector3(chunk_size_meters * 0.95, 0.15, chunk_size_meters * 0.95)
+		grid_cell_preview.mesh = box
+	
+	#print("Preview updated for ", required_cells.size(), " cells")
 
 func handle_trigger_press():
 	if is_hovering_valid_cell:
@@ -260,11 +315,63 @@ func handle_thumbstick_input():
 	# Use native XRController3D thumbstick input
 	var thumbstick_value = get_vector2("terrain_thumbstick")
 	
-	# Check for vertical movement (up/down for size selection)
-	if thumbstick_value.y > 0.5:
-		thumbstick_size_up.emit()
-	elif thumbstick_value.y < -0.5:
-		thumbstick_size_down.emit()
+	if is_right_hand:
+		# Right hand: size selection (existing functionality)
+		if thumbstick_value.y > 0.5:
+			thumbstick_size_up.emit()
+		elif thumbstick_value.y < -0.5:
+			thumbstick_size_down.emit()
+	else:
+		# Left hand: headset-relative movement
+		handle_movement_input(thumbstick_value)
+
+func handle_movement_input(thumbstick_value: Vector2):
+	if not xr_camera or not xr_origin:
+		return
+	
+	# Apply deadzone
+	if thumbstick_value.length() < thumbstick_deadzone:
+		return
+	
+	# Get headset forward direction (ignoring Y rotation for ground movement)
+	var camera_transform = xr_camera.global_transform
+	var forward = -camera_transform.basis.z  # Forward is negative Z
+	var right = camera_transform.basis.x
+	
+	# Project onto horizontal plane (remove Y component)
+	forward.y = 0
+	right.y = 0
+	forward = forward.normalized()
+	right = right.normalized()
+	
+	# Calculate movement direction based on thumbstick input
+	var move_direction = forward * thumbstick_value.y + right * thumbstick_value.x
+	
+	# Apply movement to XR origin (moves entire VR rig)
+	var movement_delta = move_direction * movement_speed * get_process_delta_time()
+	xr_origin.global_position += movement_delta
+	
+	# Optional: Add some feedback
+	if thumbstick_value.length() > last_thumbstick_input.length() + 0.1:
+		print("Moving in direction: ", move_direction, " (thumbstick: ", thumbstick_value, ")")
+	
+	last_thumbstick_input = thumbstick_value
+
+func clear_preview_cells():
+	for preview in grid_cell_previews:
+		if is_instance_valid(preview):
+			preview.queue_free()
+	grid_cell_previews.clear()
+
+func show_preview_cells(visible: bool):
+	for preview in grid_cell_previews:
+		if is_instance_valid(preview):
+			preview.visible = visible
+
+func trigger_haptic_pulse_api(name: String, strength: float, duration: float):
+	# Trigger haptic feedback on the VR controller
+	# XRController3D has the trigger_haptic_pulse method directly
+	trigger_haptic_pulse(name, 0.0, strength, duration, 0.0)
 
 func debug_raycast_status():
 	if raycast:
