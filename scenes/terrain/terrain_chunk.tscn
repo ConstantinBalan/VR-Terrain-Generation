@@ -1,4 +1,4 @@
-[gd_scene format=3 uid="uid://dt0p7rfk7w8mx"]
+[gd_scene load_steps=0 format=3 uid="uid://dt0p7rfk7w8mx"]
 
 [ext_resource type="Script" uid="uid://inyd0dnvwlit" path="res://scripts/terrain/terrain_chunk.gd" id="1_e3yo6"]
 

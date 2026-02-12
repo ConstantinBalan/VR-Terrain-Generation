@@ -1,0 +1,13 @@
+[gd_scene load_steps=2 format=3 uid="uid://b2vjx8k3narts"]
+
+[ext_resource type="Script" uid="uid://dixx860kqgr8t" path="res://scripts/vr/debug_display.gd" id="1_debug"]
+
+[node name="DebugDisplay" type="Node3D"]
+script = ExtResource("1_debug")
+
+[node name="Label3D" type="Label3D" parent="."]
+pixel_size = 0.001
+billboard = 1
+no_depth_test = true
+text = "[DEBUG]"
+outline_size = 2

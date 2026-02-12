@@ -11,6 +11,8 @@ extends XRController3D
 @onready var xr_camera: XRCamera3D = get_node("../XRCamera")
 @onready var xr_origin: XROrigin3D = get_node("../")
 
+var debug_display: Node3D  # Debug UI for left controller
+
 var trigger_pressed: bool = false
 var primary_button_pressed: bool = false
 var secondary_button_pressed: bool = false
@@ -41,6 +43,7 @@ func _ready():
 	setup_raycast()
 	setup_hand_model()
 	setup_interaction_feedback()
+	setup_debug_display()
 	
 func setup_raycast():
 	if raycast:
@@ -125,6 +128,17 @@ func setup_interaction_feedback():
 			interaction_sphere.visible = false
 	else:
 		print("Skipping interaction feedback - left hand controller")
+
+func setup_debug_display():
+	# Only add debug display to left controller
+	if not is_right_hand:
+		print("VRController: Setting up debug display for left hand")
+		var debug_scene = preload("res://scenes/vr/debug_display.tscn")
+		debug_display = debug_scene.instantiate()
+		add_child(debug_display)
+		print("VRController: Debug display attached to left controller")
+	else:
+		print("VRController: Skipping debug display - right hand controller")
 
 func _process(delta: float) -> void:
 	update_input_state()

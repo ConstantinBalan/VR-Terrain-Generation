@@ -10,6 +10,10 @@ extends Node
 @export var debug_mode: bool = true
 @export var skip_python_processing: bool = true
 
+# Microphone selection
+@export var auto_select_vr_mic: bool = true
+@export var vr_mic_keywords: Array[String] = ["Index", "Valve", "Headset", "VR"]
+
 # State management
 enum VoiceState {
 	IDLE,
@@ -61,9 +65,22 @@ func _ready():
 	connect_signals()
 
 func setup_audio_recording():
+	# List and optionally select microphone device
+	print("======== Available Audio Input Devices ========")
+	var device_list = AudioServer.get_input_device_list()
+	for i in range(device_list.size()):
+		print(i, ": ", device_list[i])
+	print("Current default device: ", AudioServer.input_device)
+	print("===============================================")
+
+	# Auto-select VR headset microphone if enabled
+	if auto_select_vr_mic:
+		select_vr_microphone(device_list)
+
 	# Create audio bus for recording
 	var bus_count = AudioServer.bus_count
 	audio_bus_index = AudioServer.get_bus_index("Record")
+	
 	
 	if audio_bus_index == -1:
 		# Create recording bus if it doesn't exist
@@ -86,6 +103,19 @@ func setup_audio_recording():
 	audio_stream_player.stream = capture
 	
 	print("VoiceTerrainController: Audio recording setup complete")
+
+func select_vr_microphone(device_list: PackedStringArray):
+	# Search for VR headset microphone based on keywords
+	for device_name in device_list:
+		for keyword in vr_mic_keywords:
+			if keyword.to_lower() in device_name.to_lower():
+				AudioServer.input_device = device_name
+				print("VoiceTerrainController: ✓ Selected VR microphone: ", device_name)
+				return
+
+	# If no VR mic found, warn but continue with default
+	print("VoiceTerrainController: ⚠ No VR microphone found matching keywords ", vr_mic_keywords)
+	print("VoiceTerrainController: Using default device: ", AudioServer.input_device)
 
 func setup_debug_system():
 	# Create debug manager for testing voice recording
