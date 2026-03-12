@@ -183,7 +183,7 @@ func update_recording_indicator():
 	if voice_controller:
 		if voice_controller.is_recording():
 			# Pulsing red during recording
-			var pulse = sin(Time.get_time_dict_from_system()["unix"] * 4.0) * 0.5 + 0.5
+			var pulse = sin(Time.get_unix_time_from_system() * 4.0) * 0.5 + 0.5
 			recording_indicator.color = Color.RED.lerp(Color.WHITE, pulse)
 		elif voice_controller.is_voice_processing():
 			recording_indicator.color = Color.YELLOW

@@ -82,23 +82,31 @@ func setup_noise_generator():
 	noise = FastNoiseLite.new()
 	noise.seed = parameters.seed_value
 	noise.frequency = parameters.frequency
-	
+
 	match parameters.terrain_type:
+		TerrainParameters.TerrainType.FLAT:
+			# Minimal noise for flat terrain - single octave, no fractal stacking
+			noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+			noise.fractal_type = FastNoiseLite.FRACTAL_NONE
+			parameters.octaves = 1
 		TerrainParameters.TerrainType.HILLS:
 			noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+			noise.fractal_type = FastNoiseLite.FRACTAL_FBM
 		TerrainParameters.TerrainType.MOUNTAINS:
 			noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
 			noise.fractal_type = FastNoiseLite.FRACTAL_RIDGED
 		TerrainParameters.TerrainType.VALLEYS:
 			noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
-			#invert amplitude for valleys
-		TerrainParameters.TerrainType.FLAT:
-			pass
-			
+			noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+		TerrainParameters.TerrainType.PLATEAU:
+			# Standard noise, the plateau effect in sampling handles flattening
+			noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+			noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+
 	noise.fractal_octaves = parameters.octaves
 	noise.fractal_lacunarity = parameters.lacunarity
 	noise.fractal_gain = parameters.persistance
-	
+
 	return noise != null
 	
 func generate_height_data() -> bool:
@@ -130,7 +138,9 @@ func sample_height_at_world_position(world_x: float, world_z: float):
 		TerrainParameters.TerrainType.PLATEAU:
 			base_height = apply_plateau_effect(base_height)
 		TerrainParameters.TerrainType.FLAT:
-			base_height *= 0.1
+			# Aggressively flatten - with FRACTAL_NONE and this scale,
+			# amplitude 1.0 produces heights of ~0.02m (nearly flat)
+			base_height *= 0.02
 		
 	if parameters.erosion_strength > 0.0:
 		base_height = apply_erosion_effect(world_x, world_z, base_height)
@@ -138,12 +148,11 @@ func sample_height_at_world_position(world_x: float, world_z: float):
 	return base_height
 	
 func apply_plateau_effect(height: float) -> float:
+	# Clamp heights above the plateau threshold to create a flat top
+	# Heights below the threshold are kept, creating slopes leading up to a flat surface
 	var plateau_threshold = parameters.plateau_level
 	if height > plateau_threshold:
-		var t = (height - plateau_threshold) / (parameters.amplitude - plateau_threshold)
-		t = clamp(t, 0.0, 1.0)
-		var smoothed = t * t * (3.0 - 2.0 * t)
-		return plateau_threshold + smoothed * (parameters.amplitude - plateau_threshold)
+		return plateau_threshold
 	return height
 
 func apply_erosion_effect(world_x: float, world_z: float, base_height: float) -> float:

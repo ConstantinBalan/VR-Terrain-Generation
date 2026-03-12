@@ -11,8 +11,21 @@ import sys
 import json
 import os
 import logging
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Ensure ffmpeg is on PATH - Godot's OS.execute may not inherit the full system PATH
+if not shutil.which("ffmpeg"):
+    _ffmpeg_paths = [
+        r"C:\Apps\ffmpeg-master-latest-win64-gpl\bin",
+        r"C:\ffmpeg\bin",
+        os.path.expanduser(r"~\ffmpeg\bin"),
+    ]
+    for _p in _ffmpeg_paths:
+        if os.path.isfile(os.path.join(_p, "ffmpeg.exe")):
+            os.environ["PATH"] = _p + os.pathsep + os.environ.get("PATH", "")
+            break
 
 # OpenAI imports
 try:
@@ -31,44 +44,57 @@ except ImportError:
     WHISPER_AVAILABLE = False
     print("Warning: Whisper library not installed. Install with: pip install openai-whisper")
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging - write to file next to this script for pipeline debugging
+_log_file = Path(__file__).parent / "voice_processor.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(_log_file, mode="w"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class VoiceTerrainProcessor:
-    def __init__(self):
+    def __init__(self, project_dir: str = None):
         self.openai_client = None
         self.whisper_model = None
+        self.project_dir = Path(project_dir) if project_dir else Path(__file__).parent
         self.setup_openai()
         self.setup_whisper()
         
         # Terrain generation context for GPT
+        # NOTE: Terrain chunks are 8-32 meters wide in VR. Amplitude is peak height in meters.
+        # Values must be small to look natural at VR scale (viewer is ~1.7m tall).
         self.terrain_context = """
-        You are a terrain generation assistant for a VR application. Your task is to convert natural language descriptions of terrain into specific parameter values for procedural generation.
+        You are a terrain generation assistant for a VR application. Terrain chunks are 8-32 meters wide and the viewer is human-scale (1.7m tall). Amplitude is peak height in METERS - keep values low for natural-looking VR terrain.
 
         Available terrain types:
-        - FLAT (0): Minimal variation, plains
-        - HILLS (1): Rolling hills, moderate elevation changes  
-        - MOUNTAINS (2): High peaks, dramatic elevation
-        - VALLEYS (3): Low areas, depressions
-        - PLATEAU (4): Flat-topped elevated areas
-        - CUSTOM (5): Mixed features
+        - FLAT (0): Nearly level ground. amplitude: 0.1-0.3
+        - HILLS (1): Gentle rolling hills. amplitude: 0.8-2.0
+        - MOUNTAINS (2): Dramatic peaks. amplitude: 2.5-4.0
+        - VALLEYS (3): Depressions and low areas. amplitude: 1.0-2.0
+        - PLATEAU (4): Flat-topped elevated terrain. amplitude: 1.5-3.0, plateau must be LESS than amplitude (plateau is the height above which terrain is flattened)
+        - CUSTOM (5): Mixed features. amplitude: 0.5-3.0
 
-        Parameters to output:
+        Parameters to output (all required):
         - seed: Random integer (0-10000)
-        - frequency: Controls feature size (0.01-1.0, lower = larger features)
-        - amplitude: Height variation (0.5-20.0)
-        - octaves: Detail layers (1-6)
-        - lacunarity: Frequency multiplier per octave (1.5-3.0)
-        - persistence: Amplitude multiplier per octave (0.1-0.8)
+        - frequency: Feature size (0.01-0.5). Lower = larger features. Typical: 0.05-0.15
+        - amplitude: Peak height in meters (0.1-4.0). IMPORTANT: keep within terrain type ranges above
+        - octaves: Detail layers (1-5). Flat: 1, hills: 2-3, mountains: 3-5
+        - lacunarity: Frequency multiplier per octave (1.5-2.5)
+        - persistence: Amplitude multiplier per octave (0.2-0.6)
         - terrain_type: Integer 0-5 corresponding to types above
-        - erosion: Water erosion effect (0.0-1.0)
-        - plateau: Plateau threshold (0.0-15.0)
+        - erosion: Water erosion effect (0.0-1.0). Only use > 0 if water/rivers mentioned
+        - plateau: Flattening threshold in meters (0.0-3.0). Only for terrain_type 4. Must be less than amplitude.
 
         Examples:
-        "I want rolling hills" -> {"terrain_type": 1, "amplitude": 8.0, "frequency": 0.1}
-        "Make some mountains with rivers" -> {"terrain_type": 2, "amplitude": 15.0, "erosion": 0.3}
-        "Flat area with small bumps" -> {"terrain_type": 0, "amplitude": 2.0, "octaves": 2}
+        "I want rolling hills" -> {"seed": 1234, "terrain_type": 1, "amplitude": 1.5, "frequency": 0.1, "octaves": 3, "lacunarity": 2.0, "persistence": 0.4, "erosion": 0.0, "plateau": 0.0}
+        "Make some mountains" -> {"seed": 5678, "terrain_type": 2, "amplitude": 3.5, "frequency": 0.06, "octaves": 4, "lacunarity": 2.2, "persistence": 0.5, "erosion": 0.0, "plateau": 0.0}
+        "Flat area" -> {"seed": 9012, "terrain_type": 0, "amplitude": 0.2, "frequency": 0.1, "octaves": 1, "lacunarity": 2.0, "persistence": 0.3, "erosion": 0.0, "plateau": 0.0}
+        "A plateau" -> {"seed": 3456, "terrain_type": 4, "amplitude": 2.5, "frequency": 0.07, "octaves": 3, "lacunarity": 2.0, "persistence": 0.4, "erosion": 0.0, "plateau": 1.0}
+        "Mountains with a river" -> {"seed": 7890, "terrain_type": 2, "amplitude": 3.0, "frequency": 0.05, "octaves": 4, "lacunarity": 2.0, "persistence": 0.5, "erosion": 0.3, "plateau": 0.0}
         """
 
     def setup_openai(self):
@@ -80,11 +106,15 @@ class VoiceTerrainProcessor:
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             logger.warning("OPENAI_API_KEY not found in environment variables")
-            # Look for API key file in project directory
-            api_key_file = Path(__file__).parent / "openai_key.txt"
+            # Look for API key file in project directory and python subfolder
+            api_key_file = self.project_dir / "python" / "openai_key.txt"
+            if not api_key_file.exists():
+                api_key_file = self.project_dir / "openai_key.txt"
+            if not api_key_file.exists():
+                api_key_file = Path(__file__).parent / "openai_key.txt"
             if api_key_file.exists():
                 api_key = api_key_file.read_text().strip()
-                logger.info("Loaded OpenAI API key from file")
+                logger.info(f"Loaded OpenAI API key from: {api_key_file}")
             else:
                 logger.warning("No OpenAI API key found, using fallback mode")
                 return
@@ -115,7 +145,7 @@ class VoiceTerrainProcessor:
             
         try:
             logger.info(f"Transcribing audio file: {audio_file_path}")
-            result = self.whisper_model.transcribe(audio_file_path)
+            result = self.whisper_model.transcribe(audio_file_path, fp16=False)
             text = result["text"].strip()
             logger.info(f"Transcription successful: '{text}'")
             return text
@@ -191,54 +221,59 @@ class VoiceTerrainProcessor:
         """Fallback analysis using keyword matching"""
         logger.info("Using fallback keyword analysis")
         text_lower = text.lower()
-        
-        # Default parameters
+
+        # Default parameters - VR scale (chunks are 8-32m, viewer is 1.7m tall)
         params = {
             "seed": int.from_bytes(os.urandom(4), byteorder='big') % 10000,
             "frequency": 0.1,
-            "amplitude": 5.0,
+            "amplitude": 1.5,
             "octaves": 3,
             "lacunarity": 2.0,
-            "persistence": 0.5,
+            "persistence": 0.4,
             "terrain_type": 1,  # HILLS
             "erosion": 0.0,
             "plateau": 0.0
         }
-        
+
         # Terrain type keywords
         if any(word in text_lower for word in ["mountain", "mountains", "peak", "peaks"]):
             params.update({
                 "terrain_type": 2,  # MOUNTAINS
-                "amplitude": 15.0,
-                "frequency": 0.05
+                "amplitude": 3.5,
+                "frequency": 0.06,
+                "octaves": 4,
+                "persistence": 0.5
             })
         elif any(word in text_lower for word in ["hill", "hills", "hilly", "rolling"]):
             params.update({
                 "terrain_type": 1,  # HILLS
-                "amplitude": 8.0,
-                "frequency": 0.1
+                "amplitude": 1.5,
+                "frequency": 0.1,
+                "persistence": 0.5,
+                "octaves": 3
             })
         elif any(word in text_lower for word in ["valley", "valleys", "depression", "low"]):
             params.update({
                 "terrain_type": 3,  # VALLEYS
-                "amplitude": 6.0
+                "amplitude": 1.5
             })
         elif any(word in text_lower for word in ["flat", "plain", "plains", "level"]):
             params.update({
                 "terrain_type": 0,  # FLAT
-                "amplitude": 1.0
+                "amplitude": 0.2,
+                "octaves": 1
             })
         elif any(word in text_lower for word in ["plateau", "mesa", "tableland"]):
             params.update({
                 "terrain_type": 4,  # PLATEAU
-                "plateau": 5.0,
-                "amplitude": 8.0
+                "plateau": 1.0,
+                "amplitude": 2.5
             })
-        
+
         # Size modifiers
         if any(word in text_lower for word in ["large", "big", "huge", "massive"]):
             params["frequency"] *= 0.5
-            params["amplitude"] *= 1.5
+            params["amplitude"] *= 1.3
         elif any(word in text_lower for word in ["small", "tiny", "little", "mini"]):
             params["frequency"] *= 2.0
             params["amplitude"] *= 0.7
@@ -260,17 +295,17 @@ class VoiceTerrainProcessor:
 
     def validate_parameters(self, params: Dict) -> Dict:
         """Validate and clamp terrain parameters to safe ranges"""
-        # Define parameter constraints
+        # Define parameter constraints - VR scale (8-32m chunks, 1.7m viewer)
         constraints = {
             "seed": (0, 10000),
-            "frequency": (0.01, 1.0),
-            "amplitude": (0.5, 20.0),
-            "octaves": (1, 6),
-            "lacunarity": (1.5, 3.0),
-            "persistence": (0.1, 0.8),
+            "frequency": (0.01, 0.5),
+            "amplitude": (0.1, 4.0),
+            "octaves": (1, 5),
+            "lacunarity": (1.5, 2.5),
+            "persistence": (0.1, 0.6),
             "terrain_type": (0, 5),
             "erosion": (0.0, 1.0),
-            "plateau": (0.0, 15.0)
+            "plateau": (0.0, 3.0)
         }
         
         validated = {}
@@ -287,10 +322,10 @@ class VoiceTerrainProcessor:
                 defaults = {
                     "seed": 42,
                     "frequency": 0.1,
-                    "amplitude": 5.0,
+                    "amplitude": 1.5,
                     "octaves": 3,
                     "lacunarity": 2.0,
-                    "persistence": 0.5,
+                    "persistence": 0.4,
                     "terrain_type": 1,
                     "erosion": 0.0,
                     "plateau": 0.0
@@ -361,14 +396,31 @@ class VoiceTerrainProcessor:
 
 def main():
     """Main entry point for the script"""
-    if len(sys.argv) != 2:
-        print(json.dumps({"error": "Usage: python voice_processor.py <audio_file_path>"}))
+    # Parse arguments: voice_processor.py <audio_file> [--project-dir <path>]
+    args = sys.argv[1:]
+    project_dir = None
+    audio_file_path = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--project-dir" and i + 1 < len(args):
+            project_dir = args[i + 1]
+            i += 2
+        elif audio_file_path is None:
+            audio_file_path = args[i]
+            i += 1
+        else:
+            i += 1
+
+    if not audio_file_path:
+        print(json.dumps({"error": "Usage: python voice_processor.py <audio_file_path> [--project-dir <path>]"}))
         return
-    
-    audio_file_path = sys.argv[1]
-    
+
+    logger.info(f"Audio file: {audio_file_path}")
+    logger.info(f"Project dir: {project_dir}")
+
     try:
-        processor = VoiceTerrainProcessor()
+        processor = VoiceTerrainProcessor(project_dir=project_dir)
         result = processor.process_voice_command(audio_file_path)
         print(json.dumps(result, indent=2))
     except Exception as e:

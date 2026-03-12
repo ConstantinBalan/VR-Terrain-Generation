@@ -110,7 +110,7 @@ func get_voice_state_text() -> String:
 
 	# Add recording duration if recording
 	if voice_controller.is_recording():
-		var duration = Time.get_time_dict_from_system()["unix"] - voice_controller.recording_start_time
+		var duration = Time.get_unix_time_from_system() - voice_controller.recording_start_time
 		text += " (" + str(snappedf(duration, 0.1)) + "s)"
 
 	return text

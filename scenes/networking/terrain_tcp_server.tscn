@@ -1,0 +1,7 @@
+[gd_scene format=3 uid="uid://c6tcp5rvr3xp0"]
+
+[ext_resource type="Script" uid="uid://csyno5f16j0nh" path="res://scripts/networking/terrain_tcp_server.gd" id="1_server"]
+
+[node name="TerrainTCPServer" type="Node3D" unique_id=1854585693]
+script = ExtResource("1_server")
+auto_listen = true

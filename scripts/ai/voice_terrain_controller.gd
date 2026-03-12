@@ -4,12 +4,12 @@ extends Node
 # Voice-controlled terrain generation system
 # Handles: VR button hold -> audio recording -> OpenAI API -> terrain generation
 
+
 @export var recording_enabled: bool = true
 @export var python_script_path: String = "res://python/voice_processor.py"
-@export var temp_audio_folder: String = "user://audio_temp/"
+@export var temp_audio_folder: String = "res://python/"
 @export var debug_mode: bool = true
-@export var skip_python_processing: bool = true
-
+@export var skip_python_processing: bool = false
 # Microphone selection
 @export var auto_select_vr_mic: bool = true
 @export var vr_mic_keywords: Array[String] = ["Index", "Valve", "Headset", "VR"]
@@ -46,6 +46,9 @@ var target_chunk_size: GridManager.ChunkSize
 
 # Debug system
 var debug_manager: VoiceDebugManager
+
+# Threading for Python execution
+var _python_thread: Thread
 
 # Signals
 signal voice_recording_started()
@@ -124,11 +127,13 @@ func setup_debug_system():
 	print("VoiceTerrainController: Debug system initialized")
 
 func setup_temp_directory():
-	# Create temporary audio directory
-	var dir = DirAccess.open("user://")
-	if not dir.dir_exists(temp_audio_folder):
-		dir.make_dir_recursive(temp_audio_folder)
-		print("VoiceTerrainController: Created temp audio directory: ", temp_audio_folder)
+	# Ensure audio output directory exists
+	var global_path = ProjectSettings.globalize_path(temp_audio_folder)
+	if not DirAccess.dir_exists_absolute(global_path):
+		DirAccess.make_dir_recursive_absolute(global_path)
+		print("VoiceTerrainController: Created audio directory: ", global_path)
+	else:
+		print("VoiceTerrainController: Audio directory exists: ", global_path)
 
 func connect_to_controllers():
 	# Find controllers through the interaction manager
@@ -160,7 +165,7 @@ func _process(delta):
 func update_recording_state():
 	match current_state:
 		VoiceState.RECORDING:
-			var recording_duration = Time.get_time_dict_from_system()["unix"] - recording_start_time
+			var recording_duration = Time.get_unix_time_from_system() - recording_start_time
 			if recording_duration >= max_recording_duration:
 				print("VoiceTerrainController: Max recording duration reached, stopping recording")
 				stop_voice_recording()
@@ -191,7 +196,7 @@ func update_visual_feedback():
 					material.albedo_color = Color.CYAN  # Cyan = ready for voice commands
 				VoiceState.RECORDING:
 					# Pulsing red while recording
-					var pulse = sin(Time.get_time_dict_from_system()["unix"] * 8.0) * 0.5 + 0.5
+					var pulse = sin(Time.get_unix_time_from_system() * 8.0) * 0.5 + 0.5
 					material.albedo_color = Color.RED.lerp(Color.WHITE, pulse)
 				VoiceState.PROCESSING:
 					material.albedo_color = Color.YELLOW
@@ -204,21 +209,26 @@ func update_visual_feedback():
 		# If not in voice mode, don't override the normal controller colors
 
 func monitor_grip_input():
-	# Monitor left controller grip button for voice recording using OpenXR action map
+	# Only allow grip recording when InteractionManager is in VOICE_RECORDING mode
+	# This enforces the flow: select size -> aim + trigger to set position -> grip to record
 	if not left_controller:
 		return
-	
+	if not interaction_manager:
+		return
+	if interaction_manager.current_mode != InteractionManager.InteractionMode.VOICE_RECORDING:
+		return
+
 	# Use left controller's OpenXR action system (same as VRController uses)
 	var grip_value = left_controller.get_float("terrain_grip") if left_controller.has_method("get_float") else 0.0
 	var is_pressed = grip_value > 0.5
-	
+
 	# Debug output for testing
 	if debug_mode and grip_value > 0.1:  # Show any grip activity
 		print("VoiceTerrainController: Grip detected - value: ", grip_value, " pressed: ", is_pressed)
-	
+
 	if is_pressed and not is_button_held and current_state == VoiceState.IDLE:
 		print("VoiceTerrainController: Starting voice recording from grip input")
-#		start_voice_recording()
+		start_voice_recording()
 	elif not is_pressed and is_button_held:
 		print("VoiceTerrainController: Stopping voice recording from grip release")
 		stop_voice_recording()
@@ -241,7 +251,7 @@ func start_voice_recording():
 	print("VoiceTerrainController: Starting voice recording...")
 	current_state = VoiceState.RECORDING
 	is_button_held = true
-#	recording_start_time = Time.get_time_dict_from_system()["unix"]
+	recording_start_time = Time.get_unix_time_from_system()
 	
 	# Start recording
 	audio_effect_record.set_recording_active(true)
@@ -262,7 +272,7 @@ func stop_voice_recording():
 		return
 	
 	is_button_held = false
-	var recording_duration = Time.get_time_dict_from_system()["unix"] - recording_start_time
+	var recording_duration = Time.get_unix_time_from_system() - recording_start_time
 	
 	print("VoiceTerrainController: Stopping voice recording (duration: ", recording_duration, "s)")
 	
@@ -287,28 +297,20 @@ func stop_voice_recording():
 
 func save_and_process_recording(duration: float):
 	current_state = VoiceState.PROCESSING
-	
+
 	# Get the recorded audio data
 	var recording = audio_effect_record.get_recording()
 	if not recording:
 		handle_processing_error("Failed to get recording data")
 		return
-	
-	# Generate unique filename
-	var timestamp = Time.get_time_string_from_system().replace(":", "-")
-	var filename = "voice_command_" + timestamp + ".wav"
-	var full_path = temp_audio_folder + filename
-	
-	# Save the audio file
-	var file = FileAccess.open(full_path, FileAccess.WRITE)
-	if not file:
-		handle_processing_error("Failed to create audio file: " + full_path)
+
+	# Save as voice_command.wav in the python folder (overwrite each time)
+	var full_path = temp_audio_folder + "voice_command.wav"
+	var error = recording.save_to_wav(full_path)
+	if error != OK:
+		handle_processing_error("Failed to save audio file: " + full_path)
 		return
-	
-	# Save as WAV format
-	recording.save_to_wav(full_path)
-	file.close()
-	
+
 	print("VoiceTerrainController: Saved recording to ", full_path)
 	voice_processing_started.emit(full_path)
 	
@@ -323,24 +325,41 @@ func save_and_process_recording(duration: float):
 		process_audio_with_python(full_path)
 
 func process_audio_with_python(audio_file_path: String):
-	# Create the Python command
-	var python_command = [
-		"python",
-		ProjectSettings.globalize_path(python_script_path),
-		ProjectSettings.globalize_path(audio_file_path)
-	]
-	
-	print("VoiceTerrainController: Executing Python script: ", python_command)
-	
-	# Execute Python script asynchronously
+	# Globalize paths so Python can access them as absolute filesystem paths
+	var global_script = ProjectSettings.globalize_path(python_script_path)
+	var global_audio = ProjectSettings.globalize_path(audio_file_path)
+	var global_project_dir = ProjectSettings.globalize_path("res://")
+
+	print("VoiceTerrainController: Executing Python script (threaded): ", global_script, " with audio: ", global_audio)
+
+	# Run in a thread so the VR app doesn't freeze while Python processes
+	if _python_thread and _python_thread.is_started():
+		_python_thread.wait_to_finish()
+	_python_thread = Thread.new()
+	_python_thread.start(_run_python_process.bind(global_script, global_audio, global_project_dir))
+
+func _run_python_process(global_script: String, global_audio: String, global_project_dir: String):
 	var output = []
-	OS.execute("python", [ProjectSettings.globalize_path(python_script_path), ProjectSettings.globalize_path(audio_file_path)], output)
-	
-	# Parse the output
+	var args = [global_script, global_audio, "--project-dir", global_project_dir]
+	OS.execute("python", args, output)
+	# Use call_deferred to handle result on the main thread
+	call_deferred("_on_python_process_finished", output)
+
+func _on_python_process_finished(output: Array):
+	if _python_thread and _python_thread.is_started():
+		_python_thread.wait_to_finish()
+
 	if output.size() > 0:
-		var result_json = output[0]
-		print("VoiceTerrainController: Python output: ", result_json)
-		parse_python_output(result_json)
+		var result_text = output[0]
+		print("VoiceTerrainController: Python output: ", result_text)
+		# Extract the outermost JSON object from stdout
+		var json_start = result_text.find("{")
+		var json_end = result_text.rfind("}")
+		if json_start != -1 and json_end != -1 and json_end > json_start:
+			var result_json = result_text.substr(json_start, json_end - json_start + 1)
+			parse_python_output(result_json)
+		else:
+			handle_processing_error("No valid JSON in Python output: " + result_text)
 	else:
 		handle_processing_error("No output from Python script")
 
@@ -430,28 +449,36 @@ func create_mock_voice_result(filename: String) -> Dictionary:
 func parse_python_output(json_string: String):
 	var json = JSON.new()
 	var parse_result = json.parse(json_string)
-	
+
 	if parse_result != OK:
 		handle_processing_error("Failed to parse Python output as JSON: " + json_string)
 		return
-	
+
 	var result_data = json.data
-	
+
 	if result_data.has("error"):
 		handle_processing_error("Python script error: " + str(result_data["error"]))
 		return
-	
-	# Extract terrain parameters from the result
-	var terrain_params = extract_terrain_parameters(result_data)
-	
-	print("VoiceTerrainController: Extracted terrain parameters: ", terrain_params)
+
+	if not result_data.has("parameters"):
+		handle_processing_error("Python output missing 'parameters' key")
+		return
+
+	# Use the validated parameters directly from the Python script
+	var terrain_params = result_data["parameters"]
+	terrain_params["seed"] = int(terrain_params.get("seed", randi() % 10000))
+	terrain_params["terrain_type"] = int(terrain_params.get("terrain_type", 1))
+	terrain_params["octaves"] = int(terrain_params.get("octaves", 3))
+
+	print("VoiceTerrainController: Using Python terrain parameters: ", terrain_params)
+	print("VoiceTerrainController: Transcription was: '", result_data.get("text", ""), "'")
 	voice_processing_completed.emit(terrain_params)
-	
+
 	# Debug callback for processing completion
 	if debug_manager:
 		debug_manager.on_processing_completed(self, terrain_params)
-	
-	# Generate terrain with the new parameters
+
+	# Generate terrain with the parameters from Python
 	generate_terrain_from_voice(terrain_params)
 
 func extract_terrain_parameters(voice_data: Dictionary) -> Dictionary:
@@ -579,13 +606,13 @@ func generate_terrain_from_voice(voice_params: Dictionary):
 	terrain_params.chunk_size_meters = GridManager.get_chunk_size_meters(target_chunk_size)
 	terrain_params.resolution = 64  # Good balance for VR
 	
-	# Apply voice-derived parameters
+	# Apply voice-derived parameters (VR scale: 8-32m chunks, 1.7m viewer)
 	terrain_params.seed_value = voice_params.get("seed", randi() % 10000)
 	terrain_params.frequency = voice_params.get("frequency", 0.1)
-	terrain_params.amplitude = voice_params.get("amplitude", 5.0)
+	terrain_params.amplitude = voice_params.get("amplitude", 1.5)
 	terrain_params.octaves = voice_params.get("octaves", 3)
 	terrain_params.lacunarity = voice_params.get("lacunarity", 2.0)
-	terrain_params.persistance = voice_params.get("persistence", 0.5)
+	terrain_params.persistance = voice_params.get("persistence", 0.4)
 	terrain_params.terrain_type = voice_params.get("terrain_type", TerrainParameters.TerrainType.HILLS)
 	terrain_params.erosion_strength = voice_params.get("erosion", 0.0)
 	terrain_params.plateau_level = voice_params.get("plateau", 0.0)
@@ -621,6 +648,7 @@ func create_voice_terrain_chunk(params: TerrainParameters):
 
 func _on_terrain_generation_complete(chunk: TerrainChunk):
 	print("VoiceTerrainController: Voice-generated terrain complete at ", chunk.grid_position)
+	GridManager.store_chunk_data(chunk.grid_position, chunk.height_data, chunk.parameters)
 	current_state = VoiceState.COMPLETED
 	terrain_generation_completed.emit(chunk)
 	

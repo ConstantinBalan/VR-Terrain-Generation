@@ -23,16 +23,22 @@ var preview_position: Vector2i
 # Voice terrain control integration
 var voice_controller: VoiceTerrainController
 
+# TCP export
+var tcp_client: TerrainTCPClient
+
 signal mode_changed(old_mode: InteractionMode, new_mode: InteractionMode)
 signal chunk_size_changed(new_size: GridManager.ChunkSize)
 signal placement_confirmed(grid_pos: Vector2i, size: GridManager.ChunkSize)
 signal voice_recording_started()
 signal voice_recording_stopped()
+signal export_started()
+signal export_finished(total_sent: int)
 
 func _ready():
 	setup_controller_connections()
 	create_preview_chunk()
 	setup_voice_controller()
+	setup_tcp_client()
 	
 func setup_controller_connections():
 	# Find VR controllers from the main scene structure
@@ -90,6 +96,45 @@ func setup_voice_controller():
 	
 	print("InteractionManager: Voice terrain controller setup complete")
 
+func setup_tcp_client():
+	tcp_client = TerrainTCPClient.new()
+	add_child(tcp_client)
+	tcp_client.connected_to_editor.connect(_on_tcp_connected)
+	tcp_client.disconnected_from_editor.connect(_on_tcp_disconnected)
+	tcp_client.chunk_acknowledged.connect(_on_chunk_acknowledged)
+	tcp_client.export_completed.connect(_on_export_completed)
+	tcp_client.connection_failed.connect(_on_tcp_connection_failed)
+	print("InteractionManager: TCP client setup complete")
+
+func _on_tcp_connected():
+	print("InteractionManager: Connected to editor - exporting all chunks")
+	tcp_client.export_all_chunks()
+	export_started.emit()
+
+func _on_tcp_disconnected():
+	print("InteractionManager: Disconnected from editor")
+
+func _on_chunk_acknowledged(grid_pos: Vector2i):
+	print("InteractionManager: Editor acknowledged chunk at ", grid_pos)
+
+func _on_export_completed(total_sent: int):
+	print("InteractionManager: Export complete - ", total_sent, " chunks sent to editor")
+	export_finished.emit(total_sent)
+
+func _on_tcp_connection_failed(reason: String):
+	print("InteractionManager: TCP connection failed - ", reason)
+
+func trigger_export():
+	if GridManager.chunk_parameters.is_empty():
+		print("InteractionManager: No chunks to export")
+		return
+	if tcp_client.state == TerrainTCPClient.ConnectionState.CONNECTED:
+		tcp_client.export_all_chunks()
+		export_started.emit()
+	else:
+		print("InteractionManager: Connecting to editor at 127.0.0.1:", NetworkProtocol.DEFAULT_PORT)
+		tcp_client.connect_to_editor()
+
 # Voice system callbacks
 func _on_voice_recording_started():
 	print("InteractionManager: Voice recording started")
@@ -115,49 +160,49 @@ func _on_voice_terrain_completed(chunk: TerrainChunk):
 	set_mode(InteractionMode.LOCKED)  # Lock after successful voice generation
 
 func _on_controller_trigger(world_pos: Vector3, grid_pos: Vector2i):
+	# Enforced flow: SIZE_SELECTION -> VOICE_MODE -> VOICE_RECORDING -> VOICE_PROCESSING -> LOCKED
 	match current_mode:
 		InteractionMode.SIZE_SELECTION:
-			# In size selection mode, trigger starts placement mode
-			set_mode(InteractionMode.PLACEMENT)
-			
-		InteractionMode.PLACEMENT:
-			# Regular terrain placement
-			attempt_placement(grid_pos)
-		
+			# Confirm size, move to aiming for position
+			set_mode(InteractionMode.VOICE_MODE)
+
 		InteractionMode.VOICE_MODE:
-			# Voice mode: trigger sets position, then wait for grip to record
+			# Confirm position, move to recording
 			if voice_controller and voice_controller.can_start_recording():
 				voice_controller.target_grid_position = grid_pos
 				voice_controller.target_chunk_size = selected_chunk_size
 				set_mode(InteractionMode.VOICE_RECORDING)
 				print("InteractionManager: Voice target set at ", grid_pos, " - Hold LEFT GRIP and speak")
-			
-		InteractionMode.VOICE_RECORDING, InteractionMode.VOICE_PROCESSING:
-			# Voice system is handling interaction - ignore trigger
-			print("InteractionManager: Voice system active - trigger ignored")
-			pass
-			
-		InteractionMode.LOCKED:
-			# Maybe select existing chunk for editing?
-			pass
+			else:
+				print("InteractionManager: Cannot set target - voice controller not ready")
 
-func _on_controller_primary_button():
-	# Mode switching with primary button - cycles through modes
-	match current_mode:
-		InteractionMode.SIZE_SELECTION:
-			set_mode(InteractionMode.PLACEMENT)
-		InteractionMode.PLACEMENT:
-			set_mode(InteractionMode.VOICE_MODE)  # Add voice mode to cycle
-		InteractionMode.VOICE_MODE:
-			set_mode(InteractionMode.SIZE_SELECTION)  # Cycle back to start
 		InteractionMode.VOICE_RECORDING, InteractionMode.VOICE_PROCESSING:
-			# Can't change modes while voice system is active
-			print("InteractionManager: Cannot change modes during voice operation")
+			# Pipeline is running - ignore trigger
+			print("InteractionManager: Voice system active - trigger ignored")
+
 		InteractionMode.LOCKED:
+			# Generation complete - trigger resets to start
 			set_mode(InteractionMode.SIZE_SELECTION)
 
+func _on_controller_primary_button():
+	# Primary button only used to go back one step or cancel
+	match current_mode:
+		InteractionMode.VOICE_MODE:
+			# Go back to size selection
+			set_mode(InteractionMode.SIZE_SELECTION)
+		InteractionMode.VOICE_RECORDING:
+			# Cancel recording, go back to aiming
+			if voice_controller and voice_controller.is_recording():
+				voice_controller.stop_voice_recording()
+			set_mode(InteractionMode.VOICE_MODE)
+		InteractionMode.LOCKED:
+			set_mode(InteractionMode.SIZE_SELECTION)
+		_:
+			# No action in other states
+			pass
+
 func _on_controller_secondary_button():
-	# Size cycling with secondary button (only in size selection mode)
+	# Size cycling only in size selection
 	if current_mode == InteractionMode.SIZE_SELECTION:
 		cycle_chunk_size()
 
@@ -170,8 +215,9 @@ func _on_thumbstick_size_down():
 		decrease_chunk_size()
 
 func _on_thumbstick_mode_toggle():
-	# Alternative mode toggle using thumbstick click
-	_on_controller_primary_button()
+	# Thumbstick click triggers terrain export to editor
+	print("InteractionManager: Thumbstick click - triggering export to editor")
+	trigger_export()
 
 func cycle_chunk_size():
 	match selected_chunk_size:
@@ -242,6 +288,7 @@ func create_terrain_at_position(grid_pos: Vector2i, chunk_size: GridManager.Chun
 	
 	# Then generate terrain (this will emit generation_complete signal)
 	terrain_chunk.generate_terrain(params, grid_pos)
+	GridManager.store_chunk_data(grid_pos, terrain_chunk.height_data, params)
 
 func set_mode(new_mode: InteractionMode):
 	var old_mode = current_mode
@@ -252,32 +299,29 @@ func set_mode(new_mode: InteractionMode):
 	match new_mode:
 		InteractionMode.SIZE_SELECTION:
 			preview_chunk.visible = false
-			print("InteractionManager: SIZE SELECTION mode - Use thumbstick to change chunk size, trigger to place")
-			
-		InteractionMode.PLACEMENT:
-			preview_chunk.visible = true
-			update_preview_chunk()
-			print("InteractionManager: PLACEMENT mode - Trigger places terrain immediately")
-		
+			print("InteractionManager: [Step 1/4] SIZE SELECTION - Thumbstick to change size, TRIGGER to confirm")
+
 		InteractionMode.VOICE_MODE:
 			preview_chunk.visible = true
 			update_preview_chunk()
-			print("InteractionManager: VOICE MODE - Trigger sets position, then HOLD LEFT GRIP and speak")
-		
+			print("InteractionManager: [Step 2/4] AIM & PLACE - Aim at grid, TRIGGER to confirm position (PRIMARY to go back)")
+
 		InteractionMode.VOICE_RECORDING:
-			# Show preview at target location during voice recording
 			preview_chunk.visible = true
-			update_preview_chunk()
-			print("InteractionManager: VOICE_RECORDING active - Hold left grip and speak")
-		
+			print("InteractionManager: [Step 3/4] SPEAK - Hold LEFT GRIP and describe terrain (PRIMARY to cancel)")
+
 		InteractionMode.VOICE_PROCESSING:
-			# Keep preview visible during processing
 			preview_chunk.visible = true
-			print("InteractionManager: Processing voice command...")
-		
+			print("InteractionManager: [Step 4/4] PROCESSING - Generating terrain from voice...")
+
 		InteractionMode.LOCKED:
 			preview_chunk.visible = false
-			print("InteractionManager: Terrain locked in place")
+			print("InteractionManager: DONE - Terrain placed! TRIGGER to start again")
+
+		InteractionMode.PLACEMENT:
+			# Kept for compatibility but not part of voice flow
+			preview_chunk.visible = true
+			update_preview_chunk()
 
 func update_preview_chunk():
 	if not preview_chunk:
@@ -294,7 +338,8 @@ func _process(delta):
 	update_preview_position()
 
 func update_preview_position():
-	if current_mode == InteractionMode.PLACEMENT and preview_chunk.visible:
+	if current_mode == InteractionMode.VOICE_MODE and preview_chunk.visible:
+		# Follow hand while aiming for position
 		if primary_controller and primary_controller.is_hovering_valid_cell:
 			var world_pos = GridManager.grid_to_world(primary_controller.current_grid_position)
 			preview_chunk.global_position = world_pos + Vector3(0, 0.05, 0)
