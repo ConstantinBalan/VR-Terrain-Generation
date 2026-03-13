@@ -12,6 +12,7 @@ enum InteractionMode {
 
 @export var current_mode: InteractionMode = InteractionMode.SIZE_SELECTION
 @export var selected_chunk_size: GridManager.ChunkSize = GridManager.ChunkSize.SMALL_8x8
+@export var generation_mode: TerrainParameters.GenerationMode = TerrainParameters.GenerationMode.HEIGHTMAP_2D
 
 var left_controller: VRController
 var right_controller: VRController
@@ -155,8 +156,8 @@ func _on_voice_processing_failed(error_message: String):
 	print("InteractionManager ERROR: Voice processing failed: ", error_message)
 	set_mode(InteractionMode.PLACEMENT)  # Return to placement mode
 
-func _on_voice_terrain_completed(chunk: TerrainChunk):
-	print("InteractionManager: Voice-generated terrain completed at ", chunk.grid_position)
+func _on_voice_terrain_completed(chunk: Node3D):
+	print("InteractionManager: Voice-generated terrain completed")
 	set_mode(InteractionMode.LOCKED)  # Lock after successful voice generation
 
 func _on_controller_trigger(world_pos: Vector3, grid_pos: Vector2i):
@@ -267,28 +268,37 @@ func attempt_placement(grid_pos: Vector2i):
 		return false
 
 func create_terrain_at_position(grid_pos: Vector2i, chunk_size: GridManager.ChunkSize):
-	# Create basic terrain chunk for MVP (will be enhanced in Phase 2)
-	var terrain_chunk = preload("res://scenes/terrain/terrain_chunk.tscn").instantiate()
-	
 	var params = TerrainParameters.new()
 	params.chunk_size_meters = GridManager.get_chunk_size_meters(chunk_size)
-	params.resolution = 64
 	params.seed_value = randi() * 10000
 	params.frequency = randf_range(0.05, 0.15)
 	params.amplitude = randf_range(3.0, 8.0)
-	# Position chunk in world using proper multi-cell positioning
+	params.generation_mode = generation_mode
+
+	# Position in world using proper multi-cell positioning
 	var world_position = GridManager.grid_to_world_chunk(grid_pos, selected_chunk_size)
-	terrain_chunk.global_position = world_position
-	
-	# Add to scene
-	get_tree().current_scene.add_child(terrain_chunk)
-	
-	# Register with grid manager using area occupation first so stitcher can connect
-	GridManager.occupy_area(grid_pos, selected_chunk_size, terrain_chunk)
-	
-	# Then generate terrain (this will emit generation_complete signal)
-	terrain_chunk.generate_terrain(params, grid_pos)
-	GridManager.store_chunk_data(grid_pos, terrain_chunk.height_data, params)
+
+	var terrain_node: Node3D
+	match generation_mode:
+		TerrainParameters.GenerationMode.DUAL_CONTOURING_3D:
+			var dc_chunk = preload("res://scenes/terrain/dual_contouring_chunk.tscn").instantiate()
+			params.grid_size_3d = 16
+			params.resolution = 16  # Not used for DC but keep consistent
+			dc_chunk.global_position = world_position
+			get_tree().current_scene.add_child(dc_chunk)
+			GridManager.occupy_area(grid_pos, selected_chunk_size, dc_chunk)
+			dc_chunk.generate_terrain(params, grid_pos)
+			terrain_node = dc_chunk
+		_:
+			# Default: HEIGHTMAP_2D
+			var terrain_chunk = preload("res://scenes/terrain/terrain_chunk.tscn").instantiate()
+			params.resolution = 64
+			terrain_chunk.global_position = world_position
+			get_tree().current_scene.add_child(terrain_chunk)
+			GridManager.occupy_area(grid_pos, selected_chunk_size, terrain_chunk)
+			terrain_chunk.generate_terrain(params, grid_pos)
+			GridManager.store_chunk_data(grid_pos, terrain_chunk.height_data, params)
+			terrain_node = terrain_chunk
 
 func set_mode(new_mode: InteractionMode):
 	var old_mode = current_mode

@@ -114,7 +114,11 @@ func generate_height_data() -> bool:
 	var chunk_size = parameters.chunk_size_meters
 	var cell_size = chunk_size / float(resolution - 1) # -1 for edge sharing
 	
-	var world_offset = GridManager.grid_to_world(grid_position)
+	# Use the chunk's actual world position (set by caller before generate_terrain)
+	# This ensures noise sampling matches the mesh's real world coordinates,
+	# which is critical for multi-cell chunks where grid_to_world(grid_position)
+	# returns a different position than the chunk's geometric center
+	var world_offset = global_position
 	
 	height_data = PackedFloat32Array()
 	height_data.resize(resolution * resolution)

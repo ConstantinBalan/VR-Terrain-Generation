@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/terrain/dual_contouring_chunk.gd" id="1_dc"]
+
+[node name="DualContouringChunk" type="Node3D"]
+script = ExtResource("1_dc")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+
+[node name="StaticBody3D" type="StaticBody3D" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="StaticBody3D"]

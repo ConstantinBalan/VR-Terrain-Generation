@@ -57,7 +57,7 @@ signal voice_processing_started(audio_file_path: String)
 signal voice_processing_completed(terrain_params: Dictionary)
 signal voice_processing_failed(error_message: String)
 signal terrain_generation_started(grid_pos: Vector2i)
-signal terrain_generation_completed(chunk: TerrainChunk)
+signal terrain_generation_completed(chunk: Node3D)
 
 func _ready():
 	print("VoiceTerrainController: Initializing voice-controlled terrain system")
@@ -558,7 +558,15 @@ func parse_voice_keywords(text: String) -> Dictionary:
 		params["octaves"] = 6
 	elif "simple" in text or "basic" in text:
 		params["octaves"] = 2
-	
+
+	# Dual contouring / 3D terrain keywords
+	if "cave" in text or "caves" in text or "tunnel" in text or "tunnels" in text:
+		params["generation_mode"] = TerrainParameters.GenerationMode.DUAL_CONTOURING_3D
+		params["cave_enabled"] = true
+		params["cave_threshold"] = 0.2
+	elif "overhang" in text or "overhangs" in text or "cliff" in text or "3d" in text or "voxel" in text:
+		params["generation_mode"] = TerrainParameters.GenerationMode.DUAL_CONTOURING_3D
+
 	print("VoiceTerrainController: Parsed keywords from '", text, "': ", params)
 	return params
 
@@ -616,6 +624,9 @@ func generate_terrain_from_voice(voice_params: Dictionary):
 	terrain_params.terrain_type = voice_params.get("terrain_type", TerrainParameters.TerrainType.HILLS)
 	terrain_params.erosion_strength = voice_params.get("erosion", 0.0)
 	terrain_params.plateau_level = voice_params.get("plateau", 0.0)
+	terrain_params.generation_mode = voice_params.get("generation_mode", TerrainParameters.GenerationMode.HEIGHTMAP_2D)
+	terrain_params.cave_enabled = voice_params.get("cave_enabled", false)
+	terrain_params.cave_threshold = voice_params.get("cave_threshold", 0.3)
 	
 	# Validate parameters
 	terrain_params.validate_parameters()
@@ -626,31 +637,39 @@ func generate_terrain_from_voice(voice_params: Dictionary):
 	create_voice_terrain_chunk(terrain_params)
 
 func create_voice_terrain_chunk(params: TerrainParameters):
-	# Create terrain chunk
-	var terrain_chunk = preload("res://scenes/terrain/terrain_chunk.tscn").instantiate()
-	
-	# Position chunk in world
 	var world_position = GridManager.grid_to_world_chunk(target_grid_position, target_chunk_size)
-	terrain_chunk.global_position = world_position
-	
-	# Add to scene
-	get_tree().current_scene.add_child(terrain_chunk)
-	
-	# Connect completion signal
-	terrain_chunk.generation_complete.connect(_on_terrain_generation_complete)
-	terrain_chunk.generation_failed.connect(_on_terrain_generation_failed)
-	
-	# Register with grid manager
-	GridManager.occupy_area(target_grid_position, target_chunk_size, terrain_chunk)
-	
-	# Generate terrain
-	terrain_chunk.generate_terrain(params, target_grid_position)
+
+	match params.generation_mode:
+		TerrainParameters.GenerationMode.DUAL_CONTOURING_3D:
+			var dc_chunk = preload("res://scenes/terrain/dual_contouring_chunk.tscn").instantiate()
+			dc_chunk.global_position = world_position
+			get_tree().current_scene.add_child(dc_chunk)
+			dc_chunk.generation_complete.connect(_on_dc_terrain_generation_complete)
+			dc_chunk.generation_failed.connect(_on_dc_terrain_generation_failed)
+			GridManager.occupy_area(target_grid_position, target_chunk_size, dc_chunk)
+			dc_chunk.generate_terrain(params, target_grid_position)
+		_:
+			var terrain_chunk = preload("res://scenes/terrain/terrain_chunk.tscn").instantiate()
+			terrain_chunk.global_position = world_position
+			get_tree().current_scene.add_child(terrain_chunk)
+			terrain_chunk.generation_complete.connect(_on_terrain_generation_complete)
+			terrain_chunk.generation_failed.connect(_on_terrain_generation_failed)
+			GridManager.occupy_area(target_grid_position, target_chunk_size, terrain_chunk)
+			terrain_chunk.generate_terrain(params, target_grid_position)
 
 func _on_terrain_generation_complete(chunk: TerrainChunk):
 	print("VoiceTerrainController: Voice-generated terrain complete at ", chunk.grid_position)
 	GridManager.store_chunk_data(chunk.grid_position, chunk.height_data, chunk.parameters)
 	current_state = VoiceState.COMPLETED
 	terrain_generation_completed.emit(chunk)
+
+func _on_dc_terrain_generation_complete(chunk: DualContouringChunk):
+	print("VoiceTerrainController: Voice-generated DC terrain complete at ", chunk.grid_position)
+	current_state = VoiceState.COMPLETED
+	terrain_generation_completed.emit(chunk)
+
+func _on_dc_terrain_generation_failed(chunk: DualContouringChunk, error: String):
+	handle_processing_error("DC terrain generation failed: " + error)
 	
 	# Reset to idle after a short delay
 	await get_tree().create_timer(2.0).timeout

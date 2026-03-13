@@ -8,7 +8,10 @@ var pending_stitches: Array[Vector2i] = []
 func _ready():
 	GridManager.cell_occupied.connect(_on_chunk_placed)
 
-func _on_chunk_placed(grid_pos: Vector2i, chunk: TerrainChunk):
+func _on_chunk_placed(grid_pos: Vector2i, chunk: Node3D):
+	# Only stitch heightmap-based TerrainChunks; DualContouringChunks need their own stitching
+	if not chunk is TerrainChunk:
+		return
 	print("TerrainStitcher: Chunk placed at ", grid_pos)
 	if not chunk.generation_complete.is_connected(_on_chunk_generation_complete_wrapper):
 		chunk.generation_complete.connect(_on_chunk_generation_complete_wrapper.bind(grid_pos))
@@ -81,41 +84,78 @@ func stitch_between_chunks(chunk: TerrainChunk, neighbor_chunk: TerrainChunk, ce
 	print("TerrainStitcher: Completed stitching between chunks")
 
 func get_cell_edge_heights(chunk: TerrainChunk, cell_pos: Vector2i, edge_direction: Vector2i) -> PackedFloat32Array:
-	# For multi-cell chunks, we need to calculate which part of the chunk's height data
-	# corresponds to this specific cell's edge
-	var chunk_metadata = GridManager.chunk_metadata.get(chunk)
-	if not chunk_metadata:
+	# For multi-cell chunks, extract only the portion of the edge that corresponds
+	# to this specific cell within the chunk
+	var meta = GridManager.chunk_metadata.get(chunk)
+	if not meta:
 		return PackedFloat32Array()
-		
-	var chunk_cells = chunk_metadata["occupied_cells"]
-	var center_pos = chunk_metadata["center_pos"]
-	
-	# Calculate the relative position of this cell within the chunk
-	var cell_offset = cell_pos - center_pos
-	
-	# For now, use the original edge heights method
-	# TODO: This needs to be enhanced to properly handle multi-cell chunks
-	return chunk.get_edge_heights(edge_direction)
 
-func apply_cell_edge_averaging(chunk: TerrainChunk, neighbor_chunk: TerrainChunk, 
+	var chunk_cells: Array = meta["occupied_cells"]
+	var chunk_size_enum = meta["chunk_size"]
+	var size_cells: int = GridManager.get_chunk_size_cells(chunk_size_enum)
+
+	# Get the full edge from the chunk
+	var full_edge: PackedFloat32Array = chunk.get_edge_heights(edge_direction)
+	if full_edge.is_empty():
+		return full_edge
+
+	# For single-cell-equivalent chunks (size_cells == 1), return full edge
+	if size_cells <= 1:
+		return full_edge
+
+	# Find the min corner of the chunk's occupied area to establish local origin
+	var min_cell := chunk_cells[0] as Vector2i
+	for cell in chunk_cells:
+		var c := cell as Vector2i
+		if c.x < min_cell.x:
+			min_cell.x = c.x
+		if c.y < min_cell.y:
+			min_cell.y = c.y
+
+	var local_cell: Vector2i = cell_pos - min_cell  # 0-based within chunk grid
+
+	var resolution: int = chunk.parameters.resolution
+	# Each cell covers an equal portion of the edge
+	# Use float division and round to handle resolutions that don't divide evenly
+	var cell_index: int
+	if edge_direction.x != 0:
+		# Left/right edges run along Z, so slice by cell's Y position
+		cell_index = local_cell.y
+	else:
+		# Top/bottom edges run along X, so slice by cell's X position
+		cell_index = local_cell.x
+
+	# Calculate start and end vertex indices for this cell's portion
+	var start_idx: int = int(round(float(cell_index) * (resolution - 1) / size_cells))
+	var end_idx: int = int(round(float(cell_index + 1) * (resolution - 1) / size_cells))
+	# Include the endpoint vertex
+	end_idx = min(end_idx + 1, full_edge.size())
+
+	var cell_edge := PackedFloat32Array()
+	for i in range(start_idx, end_idx):
+		cell_edge.append(full_edge[i])
+
+	return cell_edge
+
+func apply_cell_edge_averaging(chunk: TerrainChunk, neighbor_chunk: TerrainChunk,
 								chunk_cell: Vector2i, neighbor_cell: Vector2i, edge_direction: Vector2i,
 								chunk_heights: PackedFloat32Array, neighbor_heights: PackedFloat32Array):
-	
+
 	if chunk_heights.size() != neighbor_heights.size():
 		push_warning("Edge height arrays size mismatch: ", chunk_heights.size(), " vs ", neighbor_heights.size())
 		return
-	
+
 	# Create averaged heights
 	var averaged_heights = PackedFloat32Array()
 	for i in range(chunk_heights.size()):
 		var avg_height = (chunk_heights[i] + neighbor_heights[i]) * 0.5
 		averaged_heights.append(avg_height)
-	
-	# Apply averaged heights to both chunks
+
+	# Apply averaged heights to both chunks, passing cell positions for multi-cell support
 	print("TerrainStitcher: Applying averaged heights to both chunks")
-	modify_chunk_edge_heights(chunk, edge_direction, averaged_heights)
-	modify_chunk_edge_heights(neighbor_chunk, -edge_direction, averaged_heights)
-	
+	modify_chunk_edge_heights(chunk, chunk_cell, edge_direction, averaged_heights)
+	modify_chunk_edge_heights(neighbor_chunk, neighbor_cell, -edge_direction, averaged_heights)
+
 	print("Stitched edge between ", chunk.grid_position, " and ", neighbor_chunk.grid_position)
 
 func create_edge_stitching(chunk_pos: Vector2i, neighbor_pos: Vector2i):
@@ -157,45 +197,69 @@ func create_edge_stitching(chunk_pos: Vector2i, neighbor_pos: Vector2i):
 		stitched_edges[chunk_pos] = []
 	stitched_edges[chunk_pos].append(neighbor_pos)
 
-func apply_edge_averaging(chunk: TerrainChunk, neighbor: TerrainChunk, edge_direction: Vector2i, 
+func apply_edge_averaging(chunk: TerrainChunk, neighbor: TerrainChunk, edge_direction: Vector2i,
 						 chunk_heights: PackedFloat32Array, neighbor_heights: PackedFloat32Array):
-	
+	# Legacy path used by create_edge_stitching — uses grid_position as cell_pos
+	# (correct for single-cell chunks; for multi-cell, use stitch_between_chunks instead)
 	if chunk_heights.size() != neighbor_heights.size():
 		push_warning("Edge height arrays size mismatch: ", chunk_heights.size(), " vs ", neighbor_heights.size())
 		return
-	
-	# Create averaged heights
+
 	var averaged_heights = PackedFloat32Array()
 	for i in range(chunk_heights.size()):
 		var avg_height = (chunk_heights[i] + neighbor_heights[i]) * 0.5
 		averaged_heights.append(avg_height)
-	
-	# Apply averaged heights to chunk edge
+
 	print("TerrainStitcher: Applying heights to chunk at ", chunk.grid_position)
-	modify_chunk_edge_heights(chunk, edge_direction, averaged_heights)
-	
-	# Apply to neighbor edge (reverse direction)
+	modify_chunk_edge_heights(chunk, chunk.grid_position, edge_direction, averaged_heights)
+
 	var reverse_direction = -edge_direction
 	print("TerrainStitcher: Applying heights to neighbor at ", neighbor.grid_position, " (reverse direction: ", reverse_direction, ")")
-	modify_chunk_edge_heights(neighbor, reverse_direction, averaged_heights)
-	
+	modify_chunk_edge_heights(neighbor, neighbor.grid_position, reverse_direction, averaged_heights)
+
 	print("Stitched edge between ", chunk.grid_position, " and ", neighbor.grid_position)
 
-func modify_chunk_edge_heights(chunk: TerrainChunk, edge_direction: Vector2i, new_heights: PackedFloat32Array):
+func modify_chunk_edge_heights(chunk: TerrainChunk, cell_pos: Vector2i, edge_direction: Vector2i, new_heights: PackedFloat32Array):
 	var params = chunk.parameters
 	var resolution = params.resolution
-	
-	# Modify height data
+
+	# For multi-cell chunks, calculate the offset into the full edge
+	var start_offset: int = 0
+	var meta = GridManager.chunk_metadata.get(chunk)
+	if meta:
+		var chunk_cells: Array = meta["occupied_cells"]
+		var chunk_size_enum = meta["chunk_size"]
+		var size_cells: int = GridManager.get_chunk_size_cells(chunk_size_enum)
+
+		if size_cells > 1:
+			var min_cell := chunk_cells[0] as Vector2i
+			for cell in chunk_cells:
+				var c := cell as Vector2i
+				if c.x < min_cell.x:
+					min_cell.x = c.x
+				if c.y < min_cell.y:
+					min_cell.y = c.y
+
+			var local_cell: Vector2i = cell_pos - min_cell
+			var cell_index: int
+			if edge_direction.x != 0:
+				cell_index = local_cell.y
+			else:
+				cell_index = local_cell.x
+
+			start_offset = int(round(float(cell_index) * (resolution - 1) / size_cells))
+
+	# Modify height data at the correct offset
 	for i in range(new_heights.size()):
-		var height_index = get_edge_height_index(edge_direction, i, resolution)
+		var height_index = get_edge_height_index(edge_direction, start_offset + i, resolution)
 		if height_index >= 0 and height_index < chunk.height_data.size():
 			chunk.height_data[height_index] = new_heights[i]
-	
+
 	# Regenerate mesh with updated heights
 	print("TerrainStitcher: Regenerating mesh for chunk at ", chunk.grid_position)
 	chunk.create_mesh_from_heights()
 	chunk.setup_collisions()
-	
+
 	# Update stored data in GridManager
 	GridManager.store_chunk_data(chunk.grid_position, chunk.height_data, chunk.parameters)
 	print("TerrainStitcher: Finished updating chunk at ", chunk.grid_position)
@@ -246,22 +310,25 @@ func is_stitched(chunk_pos: Vector2i, neighbor_pos: Vector2i) -> bool:
 	return stitched_edges.has(chunk_pos) and neighbor_pos in stitched_edges[chunk_pos]
 
 func check_edge_continuity(chunk_pos: Vector2i, neighbor_pos: Vector2i) -> Dictionary:
-	# 🤔 How do you measure stitching quality?
 	var edge_direction = neighbor_pos - chunk_pos
 	var chunk = GridManager.get_chunk_at(chunk_pos)
-	
+	var neighbor = GridManager.get_chunk_at(neighbor_pos)
+
+	if not chunk or not neighbor:
+		return {"chunk_pos": chunk_pos, "neighbor_pos": neighbor_pos, "max_difference": INF, "average_difference": INF, "sample_count": 0, "error": "chunk not found"}
+
 	var chunk_edge_heights = chunk.get_edge_heights(edge_direction)
-	var neighbor_edge_heights = GridManager.get_neighbor_heights(chunk_pos, edge_direction)
-	
+	var neighbor_edge_heights = neighbor.get_edge_heights(-edge_direction)
+
 	var max_difference = 0.0
 	var total_difference = 0.0
-	
+
 	if chunk_edge_heights.size() == neighbor_edge_heights.size():
 		for i in range(chunk_edge_heights.size()):
 			var diff = abs(chunk_edge_heights[i] - neighbor_edge_heights[i])
 			max_difference = max(max_difference, diff)
 			total_difference += diff
-	
+
 	return {
 		"chunk_pos": chunk_pos,
 		"neighbor_pos": neighbor_pos,
@@ -269,3 +336,58 @@ func check_edge_continuity(chunk_pos: Vector2i, neighbor_pos: Vector2i) -> Dicti
 		"average_difference": total_difference / max(chunk_edge_heights.size(), 1),
 		"sample_count": chunk_edge_heights.size()
 	}
+
+## Full validation report for all placed chunks
+func validate_all_stitching() -> void:
+	print("=== STITCHING VALIDATION REPORT ===")
+	var checked_pairs: Dictionary = {}  # avoid checking A->B and B->A
+	var total_edges: int = 0
+	var passed_edges: int = 0
+	var failed_edges: int = 0
+	var worst_max_diff: float = 0.0
+	var worst_pair: String = ""
+
+	for cell_pos in GridManager.occupied_cells:
+		var chunk = GridManager.get_chunk_at(cell_pos)
+		if not chunk:
+			continue
+
+		var neighbors = GridManager.get_neighbor_cells(cell_pos, false)
+		for neighbor_pos in neighbors:
+			if not GridManager.is_cell_occupied(neighbor_pos):
+				continue
+
+			var neighbor_chunk = GridManager.get_chunk_at(neighbor_pos)
+			if not neighbor_chunk or neighbor_chunk == chunk:
+				continue
+
+			# Avoid duplicate checks
+			var pair_key = str(min(cell_pos.x * 10000 + cell_pos.y, neighbor_pos.x * 10000 + neighbor_pos.y)) + "_" + str(max(cell_pos.x * 10000 + cell_pos.y, neighbor_pos.x * 10000 + neighbor_pos.y))
+			if checked_pairs.has(pair_key):
+				continue
+			checked_pairs[pair_key] = true
+
+			total_edges += 1
+			var result = check_edge_continuity(cell_pos, neighbor_pos)
+			var threshold := 0.01  # 1cm tolerance
+
+			if result.max_difference <= threshold:
+				passed_edges += 1
+			else:
+				failed_edges += 1
+				print("  FAIL: ", cell_pos, " <-> ", neighbor_pos,
+					" | max_diff=", snapped(result.max_difference, 0.001),
+					" avg_diff=", snapped(result.average_difference, 0.001),
+					" samples=", result.sample_count)
+
+			if result.max_difference > worst_max_diff:
+				worst_max_diff = result.max_difference
+				worst_pair = str(cell_pos) + " <-> " + str(neighbor_pos)
+
+	print("--- Summary ---")
+	print("  Total shared edges: ", total_edges)
+	print("  Passed (< 1cm): ", passed_edges)
+	print("  Failed: ", failed_edges)
+	if total_edges > 0:
+		print("  Worst mismatch: ", snapped(worst_max_diff, 0.001), "m at ", worst_pair)
+	print("=== END REPORT ===")

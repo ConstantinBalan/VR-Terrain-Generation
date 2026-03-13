@@ -11,13 +11,14 @@ enum ChunkSize {
 @export var max_grid_extent: int = 50
 @export var debug_mode: bool = true
 
-var grid_data: Dictionary = {} #{Vector2i: TerrainChunk}
+var grid_data: Dictionary = {} # {Vector2i: Node3D} (TerrainChunk or DualContouringChunk)
 var occupied_cells: Array[Vector2i] = []
-var chunk_metadata: Dictionary = {}
+var chunk_metadata: Dictionary = {} # {TerrainChunk: occupancy data}
+var chunk_generation_data: Dictionary = {} # {Vector2i: generation metadata}
 var chunk_height_data: Dictionary = {} # {Vector2i: PackedFloat32Array}
-var chunk_parameters: Dictionary = {} # {Vector2i: TerrainParmeters}
+var chunk_parameters: Dictionary = {} # {Vector2i: TerrainParameters}
 
-signal cell_occupied(gris_pos: Vector2i, chunk: TerrainChunk)
+signal cell_occupied(grid_pos: Vector2i, chunk: Node3D)
 signal cell_freed(grid_pos: Vector2i)
 signal grid_bounds_exceeded(attempted_pos: Vector2i)
 signal grid_size_changed(old_size: float, new_size: float)
@@ -63,10 +64,10 @@ func is_within_bounds(grid_coordinates: Vector2i) -> bool:
 	var distance_from_origin = grid_coordinates.length()
 	return distance_from_origin <= max_grid_extent
 	
-func get_chunk_at(grid_coordinates: Vector2i) -> TerrainChunk:
+func get_chunk_at(grid_coordinates: Vector2i) -> Node3D:
 	return grid_data.get(grid_coordinates, null)
-	
-func occupy_cell(grid_coordinates: Vector2i, chunk: TerrainChunk) -> bool:
+
+func occupy_cell(grid_coordinates: Vector2i, chunk: Node3D) -> bool:
 	if not is_within_bounds(grid_coordinates):
 		if debug_mode:
 			push_warning("Grid position out of bounds: " + str(grid_coordinates))
@@ -202,7 +203,7 @@ func is_area_available(center_grid_pos: Vector2i, chunk_size: ChunkSize) -> bool
 	
 	return true
 
-func occupy_area(center_grid_pos: Vector2i, chunk_size: ChunkSize, chunk: TerrainChunk) -> bool:
+func occupy_area(center_grid_pos: Vector2i, chunk_size: ChunkSize, chunk: Node3D) -> bool:
 	var required_cells = get_cells_for_chunk(center_grid_pos, chunk_size)
 	
 	# First check if the entire area is available
@@ -225,7 +226,7 @@ func occupy_area(center_grid_pos: Vector2i, chunk_size: ChunkSize, chunk: Terrai
 	
 	return true
 
-func free_area(chunk: TerrainChunk) -> bool:
+func free_area(chunk: Node3D) -> bool:
 	if not chunk_metadata.has(chunk):
 		return false
 	
@@ -250,19 +251,19 @@ func free_area(chunk: TerrainChunk) -> bool:
 func get_neighbor_heights(chunk_pos: Vector2i, edge_direction: Vector2i) -> PackedFloat32Array:
 	var neighbor_pos = chunk_pos + edge_direction
 	var neighbor_chunk = get_chunk_at(neighbor_pos)
-	
-	if not neighbor_chunk:
+
+	if not neighbor_chunk or not neighbor_chunk is TerrainChunk:
 		return PackedFloat32Array()
-	
+
 	# Get heights from the opposite edge of the neighbor
 	var reverse_direction = -edge_direction
-	return neighbor_chunk.get_edge_heights(reverse_direction)
+	return (neighbor_chunk as TerrainChunk).get_edge_heights(reverse_direction)
 
 func store_chunk_data(grid_pos: Vector2i, height_data: PackedFloat32Array, parameters: TerrainParameters):
 	chunk_height_data[grid_pos] = height_data.duplicate()
 	chunk_parameters[grid_pos] = parameters.duplicate()
 	
-	chunk_metadata[grid_pos] = {
+	chunk_generation_data[grid_pos] = {
 		"generation_time": Time.get_time_dict_from_system(),
 		"resolution": parameters.resolution,
 		"seed": parameters.seed_value,
@@ -273,7 +274,7 @@ func store_chunk_data(grid_pos: Vector2i, height_data: PackedFloat32Array, param
 	print("Stored data for chunk at ", grid_pos, " - ", height_data.size(), " height samples")
 	
 	var chunk = get_chunk_at(grid_pos)
-	if chunk:
+	if chunk and chunk is TerrainChunk:
 		# Update the chunk's stored data
-		chunk.height_data = height_data
-		chunk.parameters = parameters
+		(chunk as TerrainChunk).height_data = height_data
+		(chunk as TerrainChunk).parameters = parameters

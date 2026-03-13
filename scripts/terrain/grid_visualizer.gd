@@ -90,7 +90,7 @@ func generate_coordinate_labels() -> void:
 			add_child(label)
 			coordinate_labels.append(label)
 	
-func _on_cell_occupied(grid_position: Vector2i, chunk: TerrainChunk) -> void:
+func _on_cell_occupied(grid_position: Vector2i, chunk: Node3D) -> void:
 	highlight_cell(grid_position, occupied_material)
 
 func _on_cell_freed(grid_position: Vector2i) -> void:
