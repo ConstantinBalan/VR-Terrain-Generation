@@ -25,12 +25,15 @@ static func create_handshake_ack() -> Dictionary:
 		"version": PROTOCOL_VERSION
 	}
 
-static func create_terrain_chunk_message(grid_pos: Vector2i, params_dict: Dictionary) -> Dictionary:
-	return {
+static func create_terrain_chunk_message(grid_pos: Vector2i, params_dict: Dictionary, height_data: PackedFloat32Array = PackedFloat32Array()) -> Dictionary:
+	var msg := {
 		"type": MessageType.TERRAIN_CHUNK,
 		"grid_position": {"x": grid_pos.x, "y": grid_pos.y},
 		"parameters": params_dict
 	}
+	if not height_data.is_empty():
+		msg["height_data"] = height_data
+	return msg
 
 static func create_chunk_ack(grid_pos: Vector2i) -> Dictionary:
 	return {

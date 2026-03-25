@@ -141,20 +141,35 @@ func apply_cell_edge_averaging(chunk: TerrainChunk, neighbor_chunk: TerrainChunk
 								chunk_cell: Vector2i, neighbor_cell: Vector2i, edge_direction: Vector2i,
 								chunk_heights: PackedFloat32Array, neighbor_heights: PackedFloat32Array):
 
-	if chunk_heights.size() != neighbor_heights.size():
-		push_warning("Edge height arrays size mismatch: ", chunk_heights.size(), " vs ", neighbor_heights.size())
+	if chunk_heights.is_empty() or neighbor_heights.is_empty():
+		push_warning("Edge height arrays empty — cannot stitch")
 		return
 
-	# Create averaged heights
-	var averaged_heights = PackedFloat32Array()
-	for i in range(chunk_heights.size()):
-		var avg_height = (chunk_heights[i] + neighbor_heights[i]) * 0.5
-		averaged_heights.append(avg_height)
+	if chunk_heights.size() == neighbor_heights.size():
+		# Same resolution — average directly
+		var averaged_heights = PackedFloat32Array()
+		for i in range(chunk_heights.size()):
+			averaged_heights.append((chunk_heights[i] + neighbor_heights[i]) * 0.5)
+		modify_chunk_edge_heights(chunk, chunk_cell, edge_direction, averaged_heights)
+		modify_chunk_edge_heights(neighbor_chunk, neighbor_cell, -edge_direction, averaged_heights)
+	else:
+		# Different resolutions — resample, average, then write back at each chunk's native resolution
+		print("TerrainStitcher: Resampling edges (", chunk_heights.size(), " vs ", neighbor_heights.size(), ")")
+		# Average for chunk: resample neighbor to chunk's resolution
+		var neighbor_resampled = resample_edge(neighbor_heights, chunk_heights.size())
+		var avg_for_chunk = PackedFloat32Array()
+		for i in range(chunk_heights.size()):
+			avg_for_chunk.append((chunk_heights[i] + neighbor_resampled[i]) * 0.5)
+		modify_chunk_edge_heights(chunk, chunk_cell, edge_direction, avg_for_chunk)
 
-	# Apply averaged heights to both chunks, passing cell positions for multi-cell support
+		# Average for neighbor: resample chunk to neighbor's resolution
+		var chunk_resampled = resample_edge(chunk_heights, neighbor_heights.size())
+		var avg_for_neighbor = PackedFloat32Array()
+		for i in range(neighbor_heights.size()):
+			avg_for_neighbor.append((chunk_resampled[i] + neighbor_heights[i]) * 0.5)
+		modify_chunk_edge_heights(neighbor_chunk, neighbor_cell, -edge_direction, avg_for_neighbor)
+
 	print("TerrainStitcher: Applying averaged heights to both chunks")
-	modify_chunk_edge_heights(chunk, chunk_cell, edge_direction, averaged_heights)
-	modify_chunk_edge_heights(neighbor_chunk, neighbor_cell, -edge_direction, averaged_heights)
 
 	print("Stitched edge between ", chunk.grid_position, " and ", neighbor_chunk.grid_position)
 
@@ -201,23 +216,12 @@ func apply_edge_averaging(chunk: TerrainChunk, neighbor: TerrainChunk, edge_dire
 						 chunk_heights: PackedFloat32Array, neighbor_heights: PackedFloat32Array):
 	# Legacy path used by create_edge_stitching — uses grid_position as cell_pos
 	# (correct for single-cell chunks; for multi-cell, use stitch_between_chunks instead)
-	if chunk_heights.size() != neighbor_heights.size():
-		push_warning("Edge height arrays size mismatch: ", chunk_heights.size(), " vs ", neighbor_heights.size())
+	if chunk_heights.is_empty() or neighbor_heights.is_empty():
+		push_warning("Edge height arrays empty — cannot stitch")
 		return
 
-	var averaged_heights = PackedFloat32Array()
-	for i in range(chunk_heights.size()):
-		var avg_height = (chunk_heights[i] + neighbor_heights[i]) * 0.5
-		averaged_heights.append(avg_height)
-
-	print("TerrainStitcher: Applying heights to chunk at ", chunk.grid_position)
-	modify_chunk_edge_heights(chunk, chunk.grid_position, edge_direction, averaged_heights)
-
-	var reverse_direction = -edge_direction
-	print("TerrainStitcher: Applying heights to neighbor at ", neighbor.grid_position, " (reverse direction: ", reverse_direction, ")")
-	modify_chunk_edge_heights(neighbor, neighbor.grid_position, reverse_direction, averaged_heights)
-
-	print("Stitched edge between ", chunk.grid_position, " and ", neighbor.grid_position)
+	# Delegate to the same resampling-aware logic
+	apply_cell_edge_averaging(chunk, neighbor, chunk.grid_position, neighbor.grid_position, edge_direction, chunk_heights, neighbor_heights)
 
 func modify_chunk_edge_heights(chunk: TerrainChunk, cell_pos: Vector2i, edge_direction: Vector2i, new_heights: PackedFloat32Array):
 	var params = chunk.parameters
@@ -249,20 +253,35 @@ func modify_chunk_edge_heights(chunk: TerrainChunk, cell_pos: Vector2i, edge_dir
 
 			start_offset = int(round(float(cell_index) * (resolution - 1) / size_cells))
 
-	# Modify height data at the correct offset
+	# Modify edge row heights
 	for i in range(new_heights.size()):
 		var height_index = get_edge_height_index(edge_direction, start_offset + i, resolution)
 		if height_index >= 0 and height_index < chunk.height_data.size():
 			chunk.height_data[height_index] = new_heights[i]
 
+	# Blend interior rows toward the averaged edge to prevent cliffs/holes
+	# when very different terrain types meet (e.g. mountains next to plains)
+	var blend_rows := 6
+	# Cap blend depth so we don't go past the chunk's midpoint
+	var max_depth: int = resolution / 4
+	blend_rows = min(blend_rows, max_depth)
+
+	for d in range(1, blend_rows + 1):
+		# Smooth quadratic falloff: 1.0 at edge → 0.0 at blend boundary
+		var t = 1.0 - float(d) / float(blend_rows + 1)
+		var blend_factor = t * t
+		for i in range(new_heights.size()):
+			var interior_index = get_interior_height_index(edge_direction, start_offset + i, d, resolution)
+			if interior_index >= 0 and interior_index < chunk.height_data.size():
+				var original_height = chunk.height_data[interior_index]
+				chunk.height_data[interior_index] = lerpf(original_height, new_heights[i], blend_factor)
+
 	# Regenerate mesh with updated heights
-	print("TerrainStitcher: Regenerating mesh for chunk at ", chunk.grid_position)
 	chunk.create_mesh_from_heights()
 	chunk.setup_collisions()
 
 	# Update stored data in GridManager
 	GridManager.store_chunk_data(chunk.grid_position, chunk.height_data, chunk.parameters)
-	print("TerrainStitcher: Finished updating chunk at ", chunk.grid_position)
 
 func get_edge_height_index(edge_direction: Vector2i, edge_index: int, resolution: int) -> int:
 	# Convert edge position to height data array index
@@ -276,6 +295,41 @@ func get_edge_height_index(edge_direction: Vector2i, edge_index: int, resolution
 		return 0 * resolution + edge_index
 	
 	return -1  # Invalid direction
+
+func get_interior_height_index(edge_direction: Vector2i, edge_index: int, depth: int, resolution: int) -> int:
+	# Like get_edge_height_index but offset `depth` rows inward from the edge
+	if edge_direction.x == 1:  # Right edge → move left into interior
+		return edge_index * resolution + (resolution - 1 - depth)
+	elif edge_direction.x == -1:  # Left edge → move right into interior
+		return edge_index * resolution + depth
+	elif edge_direction.y == 1:  # Bottom edge → move up into interior
+		return (resolution - 1 - depth) * resolution + edge_index
+	elif edge_direction.y == -1:  # Top edge → move down into interior
+		return depth * resolution + edge_index
+	return -1
+
+func resample_edge(source: PackedFloat32Array, target_count: int) -> PackedFloat32Array:
+	if source.size() == target_count:
+		return source
+	if source.size() <= 1:
+		var result = PackedFloat32Array()
+		result.resize(target_count)
+		result.fill(source[0] if source.size() > 0 else 0.0)
+		return result
+
+	var result = PackedFloat32Array()
+	for i in range(target_count):
+		var t = float(i) / float(target_count - 1)
+		var src_pos = t * float(source.size() - 1)
+		var src_idx = int(floor(src_pos))
+		var frac = src_pos - float(src_idx)
+
+		if src_idx >= source.size() - 1:
+			result.append(source[source.size() - 1])
+		else:
+			result.append(source[src_idx] * (1.0 - frac) + source[src_idx + 1] * frac)
+
+	return result
 
 ## Stitching validation and debugging
 func validate_stitching(chunk_pos: Vector2i) -> Dictionary:

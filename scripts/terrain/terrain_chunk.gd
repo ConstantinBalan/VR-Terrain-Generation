@@ -244,10 +244,11 @@ func create_mesh_from_heights():
 	
 	if not generate_triangles(surface_tool):
 		return false
-	
-	surface_tool.generate_normals(false)
+
+	generate_skirt(surface_tool)
+
 	surface_tool.generate_tangents()
-	
+
 	mesh_cache = surface_tool.commit()
 	mesh_instance.mesh = mesh_cache
 	
@@ -258,25 +259,47 @@ func create_mesh_from_heights():
 func generate_vertices(surface_tool: SurfaceTool):
 	var resolution = parameters.resolution
 	var chunk_size = parameters.chunk_size_meters
-	var cell_size = chunk_size /float(resolution - 1)
-	
+	var cell_size = chunk_size / float(resolution - 1)
+
 	for z in range(resolution):
 		for x in range(resolution):
 			var local_x = -chunk_size * 0.5 + x * cell_size
 			var local_z = -chunk_size * 0.5 + z * cell_size
 			var height = height_data[z * resolution + x]
-			
+
+			# Compute normal from height data using finite differences
+			var normal = _compute_height_normal(x, z, resolution, cell_size)
+			surface_tool.set_normal(normal)
+
 			var u = float(x) / float(resolution - 1)
 			var v = float(z) / float(resolution - 1)
 			surface_tool.set_uv(Vector2(u, v))
-			
+
 			var height_ratio = (height + parameters.amplitude) / (2.0 * parameters.amplitude)
 			height_ratio = clamp(height_ratio, 0.0, 1.0)
 			surface_tool.set_color(Color(height_ratio, 1.0 - height_ratio, 0.5))
-			
+
 			var vertex = Vector3(local_x, height, local_z)
 			surface_tool.add_vertex(vertex)
 	return true
+
+func _compute_height_normal(x: int, z: int, resolution: int, cell_size: float) -> Vector3:
+	# Finite differences from height data — works correctly at edges using clamped samples
+	var x0 = clampi(x - 1, 0, resolution - 1)
+	var x1 = clampi(x + 1, 0, resolution - 1)
+	var z0 = clampi(z - 1, 0, resolution - 1)
+	var z1 = clampi(z + 1, 0, resolution - 1)
+
+	var dx = height_data[z * resolution + x0] - height_data[z * resolution + x1]
+	var dz = height_data[z0 * resolution + x] - height_data[z1 * resolution + x]
+
+	# Scale by spacing (2*cell_size for central differences, cell_size at edges)
+	var x_spacing = float(x1 - x0) * cell_size
+	var z_spacing = float(z1 - z0) * cell_size
+	if x_spacing < 0.0001: x_spacing = cell_size
+	if z_spacing < 0.0001: z_spacing = cell_size
+
+	return Vector3(dx / x_spacing, 2.0, dz / z_spacing).normalized()
 	
 func generate_triangles(surface_tool: SurfaceTool) -> bool:
 	var resolution = parameters.resolution
@@ -297,7 +320,68 @@ func generate_triangles(surface_tool: SurfaceTool) -> bool:
 			surface_tool.add_index(bottom_left)
 				
 	return true
-	
+
+func generate_skirt(surface_tool: SurfaceTool) -> void:
+	# Deep vertical skirt around all edges with a slight outward extension.
+	# The bottom vertices extend outward so adjacent chunks' skirts overlap,
+	# covering both vertical gaps (height differences) and horizontal gaps
+	# (misaligned chunk edges).
+	var resolution: int = parameters.resolution
+	var chunk_size: float = parameters.chunk_size_meters
+	var cell_size: float = chunk_size / float(resolution - 1)
+	var skirt_depth: float = maxf(3.0, parameters.amplitude * 2.0)
+	var skirt_extend: float = cell_size * 0.5
+
+	var _emit_skirt_quad = func(v0: Vector3, v1: Vector3, n: Vector3):
+		var d0: Vector3 = Vector3(v0.x + n.x * skirt_extend, v0.y - skirt_depth, v0.z + n.z * skirt_extend)
+		var d1: Vector3 = Vector3(v1.x + n.x * skirt_extend, v1.y - skirt_depth, v1.z + n.z * skirt_extend)
+		surface_tool.set_normal(n); surface_tool.add_vertex(v0)
+		surface_tool.set_normal(n); surface_tool.add_vertex(d0)
+		surface_tool.set_normal(n); surface_tool.add_vertex(v1)
+		surface_tool.set_normal(n); surface_tool.add_vertex(v1)
+		surface_tool.set_normal(n); surface_tool.add_vertex(d0)
+		surface_tool.set_normal(n); surface_tool.add_vertex(d1)
+
+	# Left edge (x=0)
+	for z in range(resolution - 1):
+		var z0: float = -chunk_size * 0.5 + z * cell_size
+		var z1: float = -chunk_size * 0.5 + (z + 1) * cell_size
+		var h0: float = height_data[z * resolution]
+		var h1: float = height_data[(z + 1) * resolution]
+		var ex: float = -chunk_size * 0.5
+		_emit_skirt_quad.call(
+			Vector3(ex, h0, z0), Vector3(ex, h1, z1), Vector3(-1, 0, 0))
+
+	# Right edge (x=res-1)
+	for z in range(resolution - 1):
+		var z0: float = -chunk_size * 0.5 + z * cell_size
+		var z1: float = -chunk_size * 0.5 + (z + 1) * cell_size
+		var h0: float = height_data[z * resolution + resolution - 1]
+		var h1: float = height_data[(z + 1) * resolution + resolution - 1]
+		var ex: float = chunk_size * 0.5
+		_emit_skirt_quad.call(
+			Vector3(ex, h1, z1), Vector3(ex, h0, z0), Vector3(1, 0, 0))
+
+	# Top edge (z=0)
+	for x in range(resolution - 1):
+		var x0: float = -chunk_size * 0.5 + x * cell_size
+		var x1: float = -chunk_size * 0.5 + (x + 1) * cell_size
+		var h0: float = height_data[x]
+		var h1: float = height_data[x + 1]
+		var ez: float = -chunk_size * 0.5
+		_emit_skirt_quad.call(
+			Vector3(x1, h1, ez), Vector3(x0, h0, ez), Vector3(0, 0, -1))
+
+	# Bottom edge (z=res-1)
+	for x in range(resolution - 1):
+		var x0: float = -chunk_size * 0.5 + x * cell_size
+		var x1: float = -chunk_size * 0.5 + (x + 1) * cell_size
+		var h0: float = height_data[(resolution - 1) * resolution + x]
+		var h1: float = height_data[(resolution - 1) * resolution + x + 1]
+		var ez: float = chunk_size * 0.5
+		_emit_skirt_quad.call(
+			Vector3(x0, h0, ez), Vector3(x1, h1, ez), Vector3(0, 0, 1))
+
 func setup_terrain_material():
 	var material = StandardMaterial3D.new()
 	

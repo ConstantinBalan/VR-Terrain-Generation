@@ -14,7 +14,7 @@ extends Resource
 
 @export var resolution: int = 64 # vertices per side (2D) or grid cells per axis (3D)
 @export var chunk_size_meters: float = 8.0
-@export var generation_mode: GenerationMode = GenerationMode.HEIGHTMAP_2D
+@export var generation_mode: GenerationMode = GenerationMode.DUAL_CONTOURING_3D
 
 # Dual contouring specific parameters
 @export var grid_size_3d: int = 16         # voxel grid cells per axis (density grid)

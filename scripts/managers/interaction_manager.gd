@@ -309,6 +309,9 @@ func set_mode(new_mode: InteractionMode):
 	match new_mode:
 		InteractionMode.SIZE_SELECTION:
 			preview_chunk.visible = false
+			# Reset voice controller so it's ready for the next cycle
+			if voice_controller and voice_controller.current_state != VoiceTerrainController.VoiceState.IDLE:
+				voice_controller.current_state = VoiceTerrainController.VoiceState.IDLE
 			print("InteractionManager: [Step 1/4] SIZE SELECTION - Thumbstick to change size, TRIGGER to confirm")
 
 		InteractionMode.VOICE_MODE:
@@ -351,6 +354,6 @@ func update_preview_position():
 	if current_mode == InteractionMode.VOICE_MODE and preview_chunk.visible:
 		# Follow hand while aiming for position
 		if primary_controller and primary_controller.is_hovering_valid_cell:
-			var world_pos = GridManager.grid_to_world(primary_controller.current_grid_position)
+			var world_pos = GridManager.grid_to_world_chunk(primary_controller.current_grid_position, selected_chunk_size)
 			preview_chunk.global_position = world_pos + Vector3(0, 0.05, 0)
 			preview_position = primary_controller.current_grid_position

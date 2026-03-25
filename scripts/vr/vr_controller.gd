@@ -263,6 +263,7 @@ func update_preview_material():
 						material.albedo_color = Color.GREEN if is_hovering_valid_cell else Color.YELLOW
 					else:
 						material.albedo_color = Color.RED
+						material.albedo_color.a = 0.05
 
 func update_preview_size():
 	if not InteractionManager:

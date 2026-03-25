@@ -43,8 +43,8 @@ func disconnect_from_editor() -> void:
 	_cleanup_connection()
 	print("TerrainTCPClient: Disconnected")
 
-func send_terrain_chunk(grid_pos: Vector2i, params: TerrainParameters) -> void:
-	var message = NetworkProtocol.create_terrain_chunk_message(grid_pos, params.to_dictionary())
+func send_terrain_chunk(grid_pos: Vector2i, params: TerrainParameters, height_data: PackedFloat32Array = PackedFloat32Array()) -> void:
+	var message = NetworkProtocol.create_terrain_chunk_message(grid_pos, params.to_dictionary(), height_data)
 	send_queue.append(message)
 	total_to_send += 1
 
@@ -60,7 +60,8 @@ func export_all_chunks() -> void:
 
 	for grid_pos in all_params:
 		var params: TerrainParameters = all_params[grid_pos]
-		send_terrain_chunk(grid_pos, params)
+		var height_data: PackedFloat32Array = GridManager.chunk_height_data.get(grid_pos, PackedFloat32Array())
+		send_terrain_chunk(grid_pos, params, height_data)
 
 	print("TerrainTCPClient: Queued ", total_to_send, " chunks for export")
 
